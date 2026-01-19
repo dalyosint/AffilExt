@@ -401,7 +401,10 @@ def _graph_top_authors(filtered_papers: list[MatchedPaperData]) -> None:
                 authors[arxiv_author_name]["occ"] += 1
                 authors[arxiv_author_name]["aff"] += [aff.matched_ror.ror_id for aff in author.affiliations]
             else:
-                authors[arxiv_author_name] = {"occ": 1, "aff": []}
+                authors[arxiv_author_name] = {
+                    "occ": 1,
+                    "aff": [aff.matched_ror.ror_id for aff in author.affiliations]
+                }
 
     # replace list of affiliations with number of unique affiliations
     count_aff = lambda x: {"occ": x["occ"], "aff": len(set(x["aff"]))}
