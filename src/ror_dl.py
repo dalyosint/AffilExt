@@ -87,7 +87,7 @@ def _find_dataset_file(ror_dir: Path) -> str:
     _logger.warning("ROR dataset file not found, searching for it...")
     files = util.get_all_files_recursive(ror_dir, extension=".json")
     for file in files:
-        if "schema_v2" in file.name:
+        if "ror-data" in file.name:
             _logger.info("Found ROR dataset file '%s'.")
             return file.name
 
@@ -151,6 +151,8 @@ def _is_latest_version_on_disk(ror_dir: Path, dataset_file_name: str):
     return dataset.src_file_name == dataset_file_name
 
 
+#  the ror did drop the naming  _schema_v2 to _v2
+
 def prepare_dataset():
     ror_dir = util.get_ror_dir()
     zip_file_name, latest_dl_url = _get_latest_release_info()
@@ -158,7 +160,7 @@ def prepare_dataset():
         return
 
     base_name = zip_file_name.removesuffix(".zip")
-    dataset_file_name = f"{base_name}_schema_v2.json"
+    dataset_file_name = f"{base_name}.json "
     if _is_latest_version_on_disk(ror_dir, dataset_file_name):
         _logger.info("Found latest ROR dataset file on disk! Skipping download.")
         return
