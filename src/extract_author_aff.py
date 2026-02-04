@@ -235,3 +235,27 @@ def run(paper_dirs: list[Path]) -> None:
     We are looking for the name and the affiliations of the authors.
     """
     threaded_run.run(paper_dirs, _run_single_element)
+
+
+
+#
+
+def extract_affiliations_from_obj(ext_cmds: ExtCmdData, arxiv_metadata: ArxivMetadata) -> ExtAuthorInfo:
+    """
+    NEW FUNCTION: Takes the commands object and metadata directly.
+    """
+    # If there are no commands, we can't do anything
+    if not ext_cmds or len(ext_cmds.cmds) == 0:
+        return None
+    # if there is Commands ( depends also on the number of Commands
+    if len(ext_cmds.cmds) == 1:
+        ext_type = "single"
+        ext_results = _single_cmd_ext(ext_cmds, arxiv_metadata)
+    else:
+        ext_type, ext_results = _multi_cmd_ext(ext_cmds, arxiv_metadata)
+
+    # If we found results, wrap them up
+    if ext_results:
+        return ExtAuthorInfo(ext_type, ext_results)
+
+    return None
