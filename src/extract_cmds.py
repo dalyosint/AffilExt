@@ -111,3 +111,29 @@ def run(paper_dirs: list[Path]) -> None:
     Extract LaTeX commands from TeX files that are known to be related to author definitions.
     """
     threaded_run.run(paper_dirs, _run_single_element)
+
+
+
+# this method expect a Text String from a parquet file
+
+def extract_cmds_from_string(tex_content: str) -> ExtCmdData:
+    """
+    NEW FUNCTION: Takes a raw LaTeX string (from Parquet) and extracts commands.
+    """
+    # 1. Clean the text (remove comments like % )
+    tex_clean = latex.remove_comments(tex_content)
+
+    # 2. Find the document class (e.g., \documentclass{article})
+    documentclasses = []
+    documentclass = _extract_documentclass(tex_clean)
+    if documentclass:
+        documentclasses.append(documentclass)
+
+    # 3. Find author and affiliation commands
+    cmds = _extract_authorship_cmds_from_tex(tex_clean)
+
+    # 4. Return the result package
+    return ExtCmdData(documentclasses, cmds)
+
+
+
