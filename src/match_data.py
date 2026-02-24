@@ -297,16 +297,9 @@ def run(paper_dirs: list[Path]) -> None:
 
 
 
-# [Add to src/match_data.py]
+# pipeline: Extraction -> Fuzzy Matching -> Author Linking -> ROR Resolution
+def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata , ext_aff: ExtAuthorInfo,ror_orgs: list, ror_orgs_dict: dict ) -> MatchedPaperData:
 
-def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata,
-        ext_aff: ExtAuthorInfo,
-        ror_orgs: list,
-        ror_orgs_dict: dict
-) -> MatchedPaperData:
-    """
-    Complete pipeline: Extraction -> Fuzzy Matching -> Author Linking -> ROR Resolution.
-    """
     # 1. Validate inputs
     if not arxiv_metadata or not ext_aff or not ext_aff.extractions:
         return None
@@ -321,12 +314,9 @@ def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata,
         for aff in author.affiliations:
             paper_affiliations.add(aff)
 
-    # 4. PERFORM FUZZY MATCHING (The part that was missing!)
-    # We do this synchronously here to avoid thread overhead for just a few items.
+    # 4. PERFORM FUZZY MATCHING
     matched_affiliations_map = {}
     for aff_str in paper_affiliations:
-        # We reuse the existing _get_matched_affiliation logic.
-        # It expects args=(ror_orgs_list,) because it was designed for threaded_run.
         result_tuple = _get_matched_affiliation(aff_str, (ror_orgs,))
 
         # result_tuple is: (original_aff_string, (ror_id, score))
@@ -339,11 +329,9 @@ def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata,
         }
 
     # 5. Link Authors to these Matches
-    # This uses the map we just created to assign ROR IDs to authors
     matched_authors = _match_authors(arxiv_metadata.authors, ext_authors, matched_affiliations_map)
 
-    # 6. Resolve final ROR Objects (Add full details like Country, Org Name)
-    # We construct the intermediate dictionary expected by _get_matched_paper_data
+    # 6. Resolve final ROR Objects
     intermediate_data = {
         "matched_authors": matched_authors
     }
