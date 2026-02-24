@@ -114,16 +114,14 @@ def run(paper_dirs: list[Path]) -> None:
 
 
 
-# this method expect a Text String from a parquet file
+#  Takes a raw LaTeX string (from Parquet) and extracts commands.
 
 def extract_cmds_from_string(tex_content: str) -> ExtCmdData:
-    """
-    NEW FUNCTION: Takes a raw LaTeX string (from Parquet) and extracts commands.
-    """
+
     # 1. Clean the text (remove comments like % )
     tex_clean = latex.remove_comments(tex_content)
 
-    # 2. Find the document class (e.g., \documentclass{article})
+    # 2. Find the document class ( \{documentclass{article} )
     documentclasses = []
     documentclass = _extract_documentclass(tex_clean)
     if documentclass:
