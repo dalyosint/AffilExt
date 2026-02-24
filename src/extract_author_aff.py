@@ -238,24 +238,33 @@ def run(paper_dirs: list[Path]) -> None:
 
 
 
-#
+# Takes the commands object and metadata directly
+
 
 def extract_affiliations_from_obj(ext_cmds: ExtCmdData, arxiv_metadata: ArxivMetadata) -> ExtAuthorInfo:
-    """
-    NEW FUNCTION: Takes the commands object and metadata directly.
-    """
-    # If there are no commands, we can't do anything
+
+   # safety check
     if not ext_cmds or len(ext_cmds.cmds) == 0:
         return None
-    # if there is Commands ( depends also on the number of Commands
+
+   # commands check
     if len(ext_cmds.cmds) == 1:
         ext_type = "single"
         ext_results = _single_cmd_ext(ext_cmds, arxiv_metadata)
     else:
         ext_type, ext_results = _multi_cmd_ext(ext_cmds, arxiv_metadata)
 
-    # If we found results, wrap them up
+    # if sucessful it will print the score
     if ext_results:
+        # Use arxiv_id for the log name since we don't have a folder name
+        log_name = arxiv_metadata.arxiv_id if arxiv_metadata else "Unknown ID"
+
+        _logger.debug(
+            "Performed %s extractions for '%s'. Scores: %s",
+            len(ext_results),
+            log_name,
+            sorted([res.score for res in ext_results], key=float, reverse=True)
+        )
         return ExtAuthorInfo(ext_type, ext_results)
 
     return None

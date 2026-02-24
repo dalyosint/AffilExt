@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 import jsonpickle
 
-# Import our workers
+
 import extract_cmds
 import extract_author_aff
 import match_data
@@ -17,17 +17,14 @@ from definition.data.Author import Author
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger("ParquetPipeline")
 
-
+       # Converts the raw JSON string from the  Parquet metadata column
+       # into the format the repo expects (ArxivMetadata object)
 def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata:
-    """
-    Helper: Converts the raw JSON string from your Parquet metadata column
-    into the format the repo expects (ArxivMetadata object).
-    """
+
     try:
         data = json.loads(json_str)
 
         # We need to manually build the Author list from the metadata
-        # (Assuming 'authors_parsed' or similar field exists, otherwise basic parsing)
         authors_list = []
         if 'authors_parsed' in data:
             for auth in data['authors_parsed']:
@@ -59,12 +56,13 @@ def main():
     INPUT_FILE = "math_only_sample_500.parquet"
     OUTPUT_FILE = "math_sample_processed.parquet"
 
-    # --- PHASE 1: PREPARATION ---
+    # PHASE 1: PREPARATION
     logger.info("Step 1: Loading ROR Dataset (The dictionary for matching)...")
     # This ensures we have the organization database ready in memory
     ror_dataset = match_data._get_ror_dataset()
     ror_orgs = match_data._process_ror_orgs(ror_dataset)
     ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
+
 
     logger.info(f"Step 2: Loading Input Parquet {INPUT_FILE}...")
     df = pd.read_parquet(INPUT_FILE)
@@ -73,38 +71,38 @@ def main():
     extracted_results_column = []
     matched_results_column = []
 
-    # --- PHASE 2: PROCESSING CONVEYOR BELT ---
+
+
+    # PHASE 2: PROCESSING
     logger.info("Step 3: Processing papers...")
 
+    # we iterate through the parquet file
     count = 0
-    # ... inside src/pipeline_parquet.py ...
-
-    # REPLACE THE OLD LOOP WITH THIS:
     for index, row in df.iterrows():
         paper_id = row['id']
         full_latex_text = row['text']
         metadata_raw = row['metadata']
 
         count += 1
+        #  log every 50 paper
         if count % 50 == 0:
             logger.info(f"Processed {count} papers...")
 
-        # A. Parse Metadata
+        # Parse Metadata
         meta_obj = parse_metadata(metadata_raw, paper_id)
 
-        # B. Extract Commands
+        # Extract Commands
         ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
-        # C. Extract Affiliations
+        # Extract Affiliations
         ext_info = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
 
-        # Save extraction result (as a JSON string)
+        # Check if extraction worked
         if ext_info:
-            extracted_results_column.append(jsonpickle.encode(ext_info))
+            extracted_results_column.append(jsonpickle.encode(ext_info))  # Save extraction result
 
-            # --- THIS IS THE KEY CHANGE ---
-            # D. Match and Resolve (New Single Function Call)
-            # We use the new function from match_data.py to do everything at once
+
+            # Run matching pipeline
             final_data = match_data.match_and_resolve_single_paper(
                 meta_obj,
                 ext_info,
@@ -116,12 +114,15 @@ def main():
                 matched_results_column.append(jsonpickle.encode(final_data))
             else:
                 matched_results_column.append(None)
-            # ------------------------------
 
+        # If extraction failed completely
         else:
             extracted_results_column.append(None)
             matched_results_column.append(None)
-    # --- PHASE 3: SAVING ---
+
+
+
+    # PHASE 3: SAVING
     logger.info("Step 4: Saving results to new Parquet file...")
 
     # Add new columns to the dataframe
