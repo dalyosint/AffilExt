@@ -17,6 +17,23 @@ class AuthorModel(BaseModel):
 class ExtractionResponse(BaseModel):
     authors: List[AuthorModel]
 
+def get_latex_preamble(text_content: str) -> str:
+        """
+        Extracts everything before \begin{document} or the main content.
+        This guarantees we capture authors/affiliations without the massive paper body.
+        """
+        # Look for common start markers of the actual paper
+        match = re.search(r'\\begin\{document\}|\\maketitle|\\begin\{abstract\}', text_content)
+
+        if match:
+            preamble = text_content[:match.start()]
+            # Fallback to character limit if the preamble is inexplicably huge
+            return preamble[:8000]
+
+            # If no document start is found, fall back to character truncation
+        return text_content[:8000]
+
+
 # text_content: str =  input
 # ExtAuthorInfo = output
 def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "gemma3:1b") -> ExtAuthorInfo:
@@ -28,7 +45,7 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "ge
 
     # Setting a length limit for the prompt ( authors are usually at the top )
     # where in latex files could find the part that we need ( it ques here try another method)
-    text_input = text_content[:12000]
+    text_input = get_latex_preamble(text_content)
 
     try:
         response = ollama.chat(
@@ -37,13 +54,41 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "ge
                 {
                     'role': 'system',
                     'content': (
-                        # take a look Language Models are Few-Shot Learners
-                        # example ( snippet ) and give also the output
-                        # try different snippet
-                        # feed mt pydantic model to the prompt
-                        "You are a precise data extraction assistant. "
-                        "Extract all authors and their affiliations from the provided LaTeX text. "
-                        "Respond ONLY with the JSON format requested."
+                        f"""You are a precise data extraction assistant.
+        Your task is to extract all authors and their specific affiliations from the provided LaTeX text.
+
+        You must return the data strictly adhering to the following JSON schema:
+        {ExtractionResponse.model_json_schema()}  
+
+        
+        INPUT:
+        \\author{{Alice Smith$^{{1,2}}$ and Bob Jones$^{{2}}$}}
+        \\affiliation{{$^{{1}}$Department of Physics, MIT}}
+        \\affiliation{{$^{{2}}$CERN, Geneva, Switzerland}}
+
+        EXPECTED OUTPUT:
+        {{
+          "authors": [
+            {{
+              "name": "Alice Smith",
+              "affiliations": [
+                "Department of Physics, MIT", 
+                "CERN, Geneva, Switzerland"
+              ]
+            }},
+            {{
+              "name": "Bob Jones",
+              "affiliations": [
+                "CERN, Geneva, Switzerland"
+              ]
+            }}
+          ]
+        }}
+        
+
+        Analyze the user's LaTeX input and respond ONLY with the valid JSON matching the schema. Do not include markdown blocks or conversational text.
+        """
+
                     )
                 },
                 {
@@ -73,12 +118,14 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "ge
         _logger.error(f"Ollama extraction failed: {e}")
 
     return None
+
+
 # resume logic because it will take 3.3 day to process the whole 12 GB , after 6 days
 # smaller context windows
 # less token pass it ( use the right tokenizer )
 # Mistral
-# manually inspect the sucees rate
+# manually inspect the sucess rate
 # see the time for every row
-# generate a new new parquet file that see the average time
+# generate a new parquet file that see the average time
 # try different prompt
 # imaginary

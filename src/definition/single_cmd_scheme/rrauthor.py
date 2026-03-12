@@ -112,7 +112,13 @@ class RrAuthorThanksRef(SingleCmdScheme):
             if m := regex.search(reg_exp.THANKSREF_CONTENT, part):
                 ref_id = m.group("cnt")[1:-1]
                 name = cmd_util.sanitize(part.replace(m.group(0), ""))
-                affiliation = next(a for a in affiliations if a[0] == ref_id)[1]
+                #affiliation = next(a for a in affiliations if a[0] == ref_id)[1]
+                matched_affil = next((a for a in affiliations if a[0] == ref_id), None)
+
+                if matched_affil:
+                    affiliation = matched_affil[1]
+                else:
+                    affiliation = "Unknown Affiliation"  # or None, depending on what your code expects
                 author_aff.append(Author(name, [cmd_util.sanitize(affiliation)]))
             else:
                 # part should be only the name now -> default to INRIA affiliation
