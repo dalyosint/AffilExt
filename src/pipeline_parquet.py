@@ -1,10 +1,14 @@
-import pandas as pd
 import json
 import logging
 from pathlib import Path
 # Used to convert Python objects → string
 import jsonpickle
 import ai_fallback
+
+# new approach
+import polars as pl
+import pyarrow.parquet as pq
+import pyarrow as pa
 
 import time
 import matplotlib.pyplot as plt
@@ -56,10 +60,68 @@ def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata:
         logger.warning(f"Metadata parsing issue for {arxiv_id}: {e}")
         return None
 
-
-
 def process_single_paper(row, ror_orgs, ror_orgs_dict):
-    """Handles the processing for a single row to be run in a separate process."""
+        """Handles the processing for a single row to be run in a separate process."""
+
+        paper_start_time = time.perf_counter()
+
+        # Safely get the ID so we can log it if something fails
+        paper_id = row.get('id', 'Unknown')
+
+        extracted_result = None
+        matched_result = None
+        status = "extraction_failed"
+
+        try:
+            # extract data from row
+            full_latex_text = row['text']
+            metadata_raw = row['metadata']
+
+            # parse the metadata
+            meta_obj = parse_metadata(metadata_raw, paper_id)
+
+            # extract latex commands
+            ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
+
+            # extract author and affiliations (Traditional method)
+            ext_info = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
+
+
+            # THE AI FALLBACK
+            # If traditional extraction fails (returns None or empty), we send it to the AI
+            if not ext_info:
+                logger.info(f"Traditional extraction failed for {paper_id}. Switching to AI Fallback...")
+                ext_info = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
+
+
+            if ext_info:
+                # convert to json
+                extracted_result = jsonpickle.encode(ext_info)
+
+                # match org against ROR dataset
+                final_data = match_data.match_and_resolve_single_paper(
+                    meta_obj, ext_info, ror_orgs, ror_orgs_dict
+                )
+
+                if final_data:
+                    matched_result = jsonpickle.encode(final_data)
+                    status = "success"
+                else:
+                    status = "matching_failed"
+
+        except Exception as e:
+            # Catches any unexpected errors (like the StopIteration) so the pipeline doesn't crash
+            logger.error(f"Failed processing paper {paper_id}: {e}")
+            status = "pipeline_error"
+
+        paper_end_time = time.perf_counter()
+        duration = paper_end_time - paper_start_time
+
+        return extracted_result, matched_result, status, duration
+
+
+"""def process_single_paper(row, ror_orgs, ror_orgs_dict):
+    Handles the processing for a single row to be run in a separate process.
     paper_start_time = time.perf_counter()
 
     # extract data from row
@@ -76,9 +138,9 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
 
     # the AI fallback
 
-    """if ext_info is None:
+    if ext_info is None:
      logger.info(f"Traditional extraction failed for {paper_id}. Switching to AI Fallback...")
-     ext_info = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)"""
+     ext_info = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
 
 
     extracted_result = None
@@ -103,7 +165,7 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
     paper_end_time = time.perf_counter()
     duration = paper_end_time - paper_start_time
 
-    return extracted_result, matched_result, status, duration
+    return extracted_result, matched_result, status, duration"""
 
 
 def main():
@@ -119,48 +181,78 @@ def main():
     ror_orgs = match_data._process_ror_orgs(ror_dataset)
     ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
 
-    logger.info(f"Step 2: Loading Input Parquet {INPUT_FILE}...")
-    # Loads file into pandas dataframe
-    df = pd.read_parquet(INPUT_FILE)
-    rows = df.to_dict("records")
-
-    # prepare the storage variables
-    extracted_results_column = []
-    matched_results_column = []
-    paper_processing_times = []
-
-    success_count = 0
-    extraction_failed_count = 0
-    matching_failed_count = 0
-
-    # the most important step
-    logger.info("Step 3: Processing papers with Multiprocessing...")
-    processing_start_time = time.time()
+    logger.info(f"Step 2: Preparing to stream Input Parquet {INPUT_FILE}...")
 
     # Create a partial function with the ROR data permanently attached to it
     worker_func = partial(process_single_paper, ror_orgs=ror_orgs, ror_orgs_dict=ror_orgs_dict)
 
+    MAX_CORES = 7
+    BATCH_SIZE = 5000  # Number of rows to load into RAM at a time
 
-    MAX_CORES = 4
+    # Diagnostics tracking
+    success_count = 0
+    extraction_failed_count = 0
+    matching_failed_count = 0
+    paper_processing_times = []
 
+    logger.info("Step 3: Processing papers in streams with Multiprocessing...")
+    processing_start_time = time.time()
 
-    # Creates 4 parallel workers and Process papers in parallel
-    # chunksize = total_tasks / (cores × 4)   = 500 / (4 * 4 )
+    # Open the large parquet file for streaming reads
+    parquet_file = pq.ParquetFile(INPUT_FILE)
+    parquet_writer = None
+
+    # ProcessPoolExecutor keeps the cores busy
     with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_CORES) as executor:
-        results = list(executor.map(worker_func, rows, chunksize=30))
 
-    # Unpack the results
-    for ext_res, match_res, status, duration in results:
-        extracted_results_column.append(ext_res)
-        matched_results_column.append(match_res)
-        paper_processing_times.append(duration)
+        # iter_batches() streams the file in chunks without loading everything into memory
+        for batch in parquet_file.iter_batches(batch_size=BATCH_SIZE):
 
-        if status == "success":
-            success_count += 1
-        elif status == "matching_failed":
-            matching_failed_count += 1
-        else:
-            extraction_failed_count += 1
+            # Convert PyArrow batch to Polars DataFrame, then to dicts
+            df_batch = pl.from_arrow(batch)
+            rows = df_batch.to_dicts()
+
+            # Execute the batch in parallel
+            # While one row waits for AI, another core picks up the next row for extraction
+            results = list(executor.map(worker_func, rows, chunksize=150))
+
+            # Prepare columns for the results
+            extracted_results_column = []
+            matched_results_column = []
+
+            # Unpack the results
+            for ext_res, match_res, status, duration in results:
+                extracted_results_column.append(ext_res)
+                matched_results_column.append(match_res)
+                paper_processing_times.append(duration)
+
+                if status == "success":
+                    success_count += 1
+                elif status == "matching_failed":
+                    matching_failed_count += 1
+                else:
+                    extraction_failed_count += 1
+
+            # Append the new results as columns to the current batch
+            df_batch = df_batch.with_columns([
+                pl.Series("extracted_info", extracted_results_column),
+                pl.Series("matched_info", matched_results_column)
+            ])
+
+            # Convert back to PyArrow table for writing
+            result_table = df_batch.to_arrow()
+
+            # Write the batch directly to the output Parquet file
+            if parquet_writer is None:
+                # Initialize the writer with the schema of the first fully processed batch
+                parquet_writer = pq.ParquetWriter(OUTPUT_FILE, result_table.schema)
+
+            parquet_writer.write_table(result_table)
+            logger.info(f"Successfully processed and wrote a batch of {len(rows)} rows.")
+
+    # Close the writer once all streaming is done
+    if parquet_writer:
+        parquet_writer.close()
 
     processing_end_time = time.time()
     processing_time = processing_end_time - processing_start_time
@@ -173,7 +265,7 @@ def main():
 
     plt.figure(figsize=(10, 6))
     plt.hist(paper_processing_times, bins=50, color='skyblue', edgecolor='black')
-    plt.title('Distribution of Processing Times per Paper (Multiprocessing)')
+    plt.title('Distribution of Processing Times per Paper (Streaming + Multiprocessing)')
     plt.xlabel('Processing Time (seconds)')
     plt.ylabel('Number of Papers')
     plt.grid(axis='y', alpha=0.75)
@@ -185,7 +277,7 @@ def main():
 
     plt.figure(figsize=(8, 6))
     bars = plt.bar(categories, counts, color=['#4CAF50', '#F44336', '#FF9800'], edgecolor='black')
-    plt.title('Paper Processing Outcomes (Multiprocessing)')
+    plt.title('Paper Processing Outcomes (Streaming + Multiprocessing)')
     plt.ylabel('Number of Papers')
     for bar in bars:
         yval = bar.get_height()
@@ -195,12 +287,7 @@ def main():
     plt.close()
     # ----------------------------
 
-    logger.info("Step 4: Saving results...")
-    df['extracted_info'] = extracted_results_column
-    df['matched_info'] = matched_results_column
-    df.to_parquet(OUTPUT_FILE)
-
-    logger.info(f"Success! Output saved to {OUTPUT_FILE}")
+    logger.info(f"Success! Final streamed output saved to {OUTPUT_FILE}")
 
     total_end_time = time.time()
     total_time = total_end_time - total_start_time
