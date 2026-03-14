@@ -70,6 +70,8 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
 
         extracted_result = None
         matched_result = None
+        # variable for AI output
+        ai_result = None
         status = "extraction_failed"
 
         try:
@@ -92,6 +94,10 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
             if not ext_info:
                 logger.info(f"Traditional extraction failed for {paper_id}. Switching to AI Fallback...")
                 ext_info = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
+
+                # AI successfully extracted info
+                if ext_info:
+                    ai_result = jsonpickle.encode(ext_info)
 
 
             if ext_info:
@@ -117,60 +123,15 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
         paper_end_time = time.perf_counter()
         duration = paper_end_time - paper_start_time
 
-        return extracted_result, matched_result, status, duration
+        return extracted_result, matched_result, ai_result, status, duration
 
 
-"""def process_single_paper(row, ror_orgs, ror_orgs_dict):
-    Handles the processing for a single row to be run in a separate process.
-    paper_start_time = time.perf_counter()
 
-    # extract data from row
-    paper_id = row['id']
-    full_latex_text = row['text']
-    metadata_raw = row['metadata']
-
-    # parse the metadat
-    meta_obj = parse_metadata(metadata_raw, paper_id)
-    # extract latex commands
-    ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
-    # extract autor and affiliations
-    ext_info = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
-
-    # the AI fallback
-
-    if ext_info is None:
-     logger.info(f"Traditional extraction failed for {paper_id}. Switching to AI Fallback...")
-     ext_info = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
-
-
-    extracted_result = None
-    matched_result = None
-    status = "extraction_failed"
-
-
-    if ext_info:
-        # convert to json
-        extracted_result = jsonpickle.encode(ext_info)
-        # match org
-        final_data = match_data.match_and_resolve_single_paper(
-            meta_obj, ext_info, ror_orgs, ror_orgs_dict
-        )
-
-        if final_data:
-            matched_result = jsonpickle.encode(final_data)
-            status = "success"
-        else:
-            status = "matching_failed"
-
-    paper_end_time = time.perf_counter()
-    duration = paper_end_time - paper_start_time
-
-    return extracted_result, matched_result, status, duration"""
 
 
 def main():
 
-    INPUT_FILE = "math_subset.parquet"
+    INPUT_FILE = "math_100.parquet"
     OUTPUT_FILE = "math_sample_processed.parquet"
 
     # start time
@@ -186,8 +147,8 @@ def main():
     # Create a partial function with the ROR data permanently attached to it
     worker_func = partial(process_single_paper, ror_orgs=ror_orgs, ror_orgs_dict=ror_orgs_dict)
 
-    MAX_CORES = 7
-    BATCH_SIZE = 5000  # Number of rows to load into RAM at a time
+    MAX_CORES = 4
+    BATCH_SIZE = 50 # Number of rows to load into RAM at a time
 
     # Diagnostics tracking
     success_count = 0
@@ -214,16 +175,18 @@ def main():
 
             # Execute the batch in parallel
             # While one row waits for AI, another core picks up the next row for extraction
-            results = list(executor.map(worker_func, rows, chunksize=150))
+            results = list(executor.map(worker_func, rows, chunksize=10))
 
             # Prepare columns for the results
             extracted_results_column = []
             matched_results_column = []
+            ai_results_column = []
 
             # Unpack the results
-            for ext_res, match_res, status, duration in results:
+            for ext_res, match_res, ai_res, status, duration in results:
                 extracted_results_column.append(ext_res)
                 matched_results_column.append(match_res)
+                ai_results_column.append(ai_res)
                 paper_processing_times.append(duration)
 
                 if status == "success":
@@ -236,7 +199,8 @@ def main():
             # Append the new results as columns to the current batch
             df_batch = df_batch.with_columns([
                 pl.Series("extracted_info", extracted_results_column),
-                pl.Series("matched_info", matched_results_column)
+                pl.Series("matched_info", matched_results_column),
+                pl.Series("ai_output", ai_results_column)
             ])
 
             # Convert back to PyArrow table for writing

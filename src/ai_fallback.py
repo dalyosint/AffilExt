@@ -1,6 +1,8 @@
 import logging
 import ollama
 # new library
+
+import re
 from pydantic import BaseModel
 from typing import List
 from definition.data.Author import Author as AIExtAuthor
@@ -36,7 +38,7 @@ def get_latex_preamble(text_content: str) -> str:
 
 # text_content: str =  input
 # ExtAuthorInfo = output
-def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "gemma3:1b") -> ExtAuthorInfo:
+def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "llama3.2") -> ExtAuthorInfo:
     """
     Sends text to Ollama and enforces a structured JSON response.
     Returns an ExtAuthorInfo object to maintain compatibility with the pipeline.
