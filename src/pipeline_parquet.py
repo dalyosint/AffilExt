@@ -60,73 +60,57 @@ def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata:
         logger.warning(f"Metadata parsing issue for {arxiv_id}: {e}")
         return None
 
+
 def process_single_paper(row, ror_orgs, ror_orgs_dict):
-        """Handles the processing for a single row to be run in a separate process."""
+    """Handles the processing for a single row to be run in a separate process."""
+    paper_start_time = time.perf_counter()
+    paper_id = row.get('id', 'Unknown')
 
-        paper_start_time = time.perf_counter()
+    extracted_result = None
+    matched_result = None
+    ai_result = None
+    status = "extraction_failed"
 
-        # Safely get the ID so we can log it if something fails
-        paper_id = row.get('id', 'Unknown')
+    try:
+        full_latex_text = row['text']
+        metadata_raw = row['metadata']
+        meta_obj = parse_metadata(metadata_raw, paper_id)
+        ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
-        extracted_result = None
-        matched_result = None
-        # variable for AI output
-        ai_result = None
-        status = "extraction_failed"
+        # 1. ALWAYS run Traditional Extraction
+        ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
+        if ext_info_trad:
+            extracted_result = jsonpickle.encode(ext_info_trad)
 
-        try:
-            # extract data from row
-            full_latex_text = row['text']
-            metadata_raw = row['metadata']
+        # 2. ALWAYS run AI Extraction (The Experiment)
+        logger.info(f"Running AI extraction for {paper_id}...")
+        ext_info_ai = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
+        if ext_info_ai:
+            ai_result = jsonpickle.encode(ext_info_ai)
 
-            # parse the metadata
-            meta_obj = parse_metadata(metadata_raw, paper_id)
+        # 3. Choose which one to use for ROR Matching
+        # We prefer traditional, but fallback to AI if traditional failed
+        ext_info_for_matching = ext_info_trad if ext_info_trad else ext_info_ai
 
-            # extract latex commands
-            ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
+        if ext_info_for_matching:
+            final_data = match_data.match_and_resolve_single_paper(
+                meta_obj, ext_info_for_matching, ror_orgs, ror_orgs_dict
+            )
 
-            # extract author and affiliations (Traditional method)
-            ext_info = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
+            if final_data:
+                matched_result = jsonpickle.encode(final_data)
+                status = "success"
+            else:
+                status = "matching_failed"
 
+    except Exception as e:
+        logger.error(f"Failed processing paper {paper_id}: {e}")
+        status = "pipeline_error"
 
-            # THE AI FALLBACK
-            # If traditional extraction fails (returns None or empty), we send it to the AI
-            if not ext_info:
-                logger.info(f"Traditional extraction failed for {paper_id}. Switching to AI Fallback...")
-                ext_info = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
+    paper_end_time = time.perf_counter()
+    duration = paper_end_time - paper_start_time
 
-                # AI successfully extracted info
-                if ext_info:
-                    ai_result = jsonpickle.encode(ext_info)
-
-
-            if ext_info:
-                # convert to json
-                extracted_result = jsonpickle.encode(ext_info)
-
-                # match org against ROR dataset
-                final_data = match_data.match_and_resolve_single_paper(
-                    meta_obj, ext_info, ror_orgs, ror_orgs_dict
-                )
-
-                if final_data:
-                    matched_result = jsonpickle.encode(final_data)
-                    status = "success"
-                else:
-                    status = "matching_failed"
-
-        except Exception as e:
-            # Catches any unexpected errors (like the StopIteration) so the pipeline doesn't crash
-            logger.error(f"Failed processing paper {paper_id}: {e}")
-            status = "pipeline_error"
-
-        paper_end_time = time.perf_counter()
-        duration = paper_end_time - paper_start_time
-
-        return extracted_result, matched_result, ai_result, status, duration
-
-
-
+    return extracted_result, matched_result, ai_result, status, duration
 
 
 def main():
@@ -175,7 +159,7 @@ def main():
 
             # Execute the batch in parallel
             # While one row waits for AI, another core picks up the next row for extraction
-            results = list(executor.map(worker_func, rows, chunksize=10))
+            results = list(executor.map(worker_func, rows, chunksize=5))
 
             # Prepare columns for the results
             extracted_results_column = []
@@ -257,6 +241,9 @@ def main():
     total_time = total_end_time - total_start_time
     logger.info(f"Total pipeline time: {total_time:.2f} seconds")
 
+    df = pl.read_parquet("math_sample_processed.parquet")
+    # Select only the columns you need to compare
+    df.select(["id", "extracted_info", "ai_output"]).write_csv("manual_review.csv")
 
 if __name__ == "__main__":
     main()
