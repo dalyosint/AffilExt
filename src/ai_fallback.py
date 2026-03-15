@@ -100,8 +100,14 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "ll
             ],
             # This forces AI to follow the  structure
             # add a temperature
-            format=ExtractionResponse.model_json_schema()
+            format=ExtractionResponse.model_json_schema(),
+            # this force the model to be deterministic and not creative
+            options = {
+            "temperature": 0.0,
+            "top_p": 0.1 }
+
         )
+
         # getting the AI response
         json_content = response['message']['content']
         # validate response ( valid or not )
