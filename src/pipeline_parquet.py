@@ -241,9 +241,7 @@ def main():
     total_time = total_end_time - total_start_time
     logger.info(f"Total pipeline time: {total_time:.2f} seconds")
 
-    df = pl.read_parquet("math_sample_processed.parquet")
-    # Select only the columns you need to compare
-    df.select(["id", "extracted_info", "ai_output"]).write_csv("manual_review.csv")
+
 
 if __name__ == "__main__":
     main()
