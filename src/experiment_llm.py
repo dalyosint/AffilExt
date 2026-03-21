@@ -5,7 +5,7 @@ import re
 import ollama
 import polars as pl
 from pydantic import BaseModel, ValidationError
-from typing import List
+from typing import List, Optional
 
 # existing pipeline tools
 import extract_cmds
@@ -29,113 +29,119 @@ class ExtractionResponse(BaseModel):
 
 def get_latex_preamble(text_content: str) -> str:
     """
-    Extracts everything before \begin{document} or the main content.
-    This guarantees we capture authors/affiliations without the massive paper body.
+    Captures everything from Line 1 down to \maketitle, \begin{abstract},
+    or the first \section. This safely accommodates Standard, KOMA, ACM,
+    IEEE, and AMS document classes.
     """
-    match = re.search(r'\\begin\{document\}|\\maketitle|\\begin\{abstract\}', text_content)
+    # 1. Look for the commands that officially start the "Body Text"
+    # We use re.IGNORECASE just in case someone typed \MakeTitle
+    cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
+    match = re.search(cut_triggers, text_content, re.IGNORECASE)
+
     if match:
-        preamble = text_content[:match.start()]
-        return preamble[:8000]
-    return text_content[:8000]
+        # 2. Cut the document right before the body text begins
+        target_text = text_content[:match.start()]
+
+        # 3. Limit to the BOTTOM 5000 characters of our cut.
+        # This throws away the massive wall of \usepackage commands at the top,
+        # leaving the clean author/title metadata at the bottom for the AI.
+        if len(target_text) > 5000:
+            return target_text[-5000:]
+        return target_text
+
+    # 4. Backup plan if none of the triggers are found
+    print(" Warning: Could not find \maketitle, abstract, or section tags.")
+    return text_content[:5000]
+
 
 
 #  Define Prompts
-PROMPT_BASE = """You are a precise data extraction assistant.
-Your task is to extract all authors and their specific affiliations from the provided LaTeX text.
-You must return the data strictly adhering to the provided JSON schema.
-
-INPUT:
-\\author{Alice Smith$^{1,2}$ and Bob Jones$^{2}$}
-\\affiliation{$^{1}$Department of Physics, MIT}
-\\affiliation{$^{2}$CERN, Geneva, Switzerland}
-
-EXPECTED OUTPUT:
-{
-  "authors": [
-    {
-      "name": "Alice Smith",
-      "affiliations": ["Department of Physics, MIT", "CERN, Geneva, Switzerland"]
-    },
-    {
-      "name": "Bob Jones",
-      "affiliations": ["CERN, Geneva, Switzerland"]
-    }
-  ]
-}
-
-Analyze the user's LaTeX input and respond ONLY with valid JSON. Do not include markdown blocks or conversational text.
+PROMPT_BASE = """Extract all authors and their affiliations following LaTeX preamble.
+<LATEX_PREAMBLE>
+{text_input}
+</LATEX_PREAMBLE> 
 """
 
-PROMPT_CONSTRAINED = """You are a highly strict data extraction assistant.
-Your task is to extract all authors and their specific affiliations from the provided LaTeX text.
-
-CRITICAL RULES:
-1. ONLY extract authors and affiliations that physically exist in the text.
-2. DO NOT guess, infer, or hallucinate affiliations.
-3. If an author has no listed affiliation, leave their affiliations array EMPTY [].
-4. Return ONLY valid JSON matching the schema. NO conversational text.
-
-INPUT:
-\\author{Alice Smith$^{1}$ and Bob Jones}
-\\affiliation{$^{1}$Department of Physics, MIT}
-
-EXPECTED OUTPUT:
-{
-  "authors": [
-    {
-      "name": "Alice Smith",
-      "affiliations": ["Department of Physics, MIT"]
-    },
-    {
-      "name": "Bob Jones",
-      "affiliations": []
-    }
-  ]
-}
-"""
-
-PROMPT_SUPER = """Task: Extract authors and their affiliations from LaTeX.
-
-Read only the text inside <TEXT>.
-
-Where authors usually appear:
-- \\author{...}
-
-Where affiliations usually appear:
-- \\affiliation{...}
-- \\institute{...}
-- \\address{...}
-- text after \\\\ inside \\author{}
-
-Extraction procedure:
-1. Find author names in \\author{...}
-2. Find affiliations in \\affiliation{}, \\institute{}, or \\address{}
-3. Match affiliations to the nearest author if possible.
+PROMPT_CONSTRAINEDT = """Extract authors and affiliations from a LaTeX preamble.
 
 Rules:
-- Use ONLY text that appears inside the <TEXT> tags.
-- Do NOT invent names.
-- Do NOT guess affiliations.
-- If an author has no affiliation → use [].
-- If no authors exist → return {"authors": []}
-- NEVER output the literal words "EXTRACTED_NAME" or "EXTRACTED_AFFILIATION". Replace them with the actual text.
+- List all authors.
+- List all affiliations explicitly given.
+- Match authors to affiliations using only the text.
+- If none, use [].
+- No guessing.
+- Output valid JSON only.
 
-Output format (JSON only):
-{
-  "authors": [
-    {
-      "name": "<EXTRACTED_NAME>",
-      "affiliations": ["<EXTRACTED_AFFILIATION>"]
-    }
-  ]
-}
+Example:
+Input:
+\\author{Alice Smith, Bob Johnson, Carol Lee}
+\\affil{ University Alpha}
+\\affil{ Institute Beta}
 
-Return ONLY valid JSON. No conversational text.
+Output:
+{"authors":[
+{"name":"Alice Smith","affiliations":["University Alpha"]},
+{"name":"Bob Johnson","affiliations":["Institute Beta"]},
+{"name":"Carol Lee","affiliations":[]}
+]}
 
-<TEXT>
+Format:
+{"authors":[{"name":"Author Name","affiliations":["Affiliation"]}]}
+
+<LATEX_PREAMBLE>
 {text_input}
-</TEXT>
+</LATEX_PREAMBLE>
 """
+
+PROMPT_SUPER = rf"""You are an expert academic data extraction AI.Extract authors and affiliations from a LaTeX preamble.
+
+Return JSON matching:
+{ExtractionResponse.model_json_schema()}
+
+Rules:
+- Extract only names and affiliations explicitly present.
+- Match authors to affiliations via markers in the text.
+- Ignore LaTeX commands and formatting.
+- Do not include markers in output.
+- If none, use [].
+- No guessing.
+- Output JSON only.
+
+EXAMPLE 1 
+Input:
+\begin{{center}}
+{{\large\textbf{{ON THE PSEUDOSPECTRUM OF ELLIPTIC QUADRATIC DIFFERENTIAL OPERATORS}}\\
+\bigskip
+\medskip
+Karel \textsc{{Pravda-Starov}}\\
+\bigskip
+University of California, Berkeley}}
+\end{{center}}
+
+Output:
+{{"authors":[
+  {{"name":"Karel Pravda-Starov","affiliations":["University of California, Berkeley"]}}
+]}}
+
+EXAMPLE 2 
+Input:
+\author{{Peter Pickl\footnote{{Institut f\"ur theoretische Physik, Universit\"at
+        Wien, Boltzmanngasse 5, 1090 Vienna, Austria
+         E-mail: pickl@mathematik.uni-muenchen.de}}, Detlef Duerr\footnote{{Mathematisches Institut der Universit\"at
+         M\"unchen, Theresienstra\ss e 39, 80333 M\"unchen, Germany.
+         E-mail: duerr@mathematik.uni-muenchen.de}}}}.
+
+Output:
+{{"authors":[
+  {{"name":"Peter Pickl","affiliations":["Institut für theoretische Physik, Universität Wien, Boltzmanngasse 5, 1090 Vienna, Austria"]}},
+  {{"name":"Detlef Duerr","affiliations":["Mathematisches Institut der Universität München, Theresienstraße 39, 80333 München, Germany"]}}
+]}} 
+
+<LATEX_PREAMBLE>
+{text_input}
+</LATEX_PREAMBLE>
+"""
+
 
 PROMPTS = {
     "Base_Prompt": PROMPT_BASE,
@@ -144,25 +150,45 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["llama3.2:latest", "gemma3:1b", "qwen2.5:0.5b"]
-TEMPERATURES = [0.0, 0.3, 0.7]
+MODELS = ["phi3:mini " , "gemma2:2b", "qwen2.5:0.5b"]
+TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
 
 def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
     """Custom extraction function to allow dynamic prompts and parameters."""
+
+    formatted_system_prompt = system_prompt.replace("{text_input}", text_input)
+
+    # ==========================================
+    # DEBUG: PRINT STATEMENTS TO SEE AI INPUT
+    # ==========================================
+    print("\n" + "=" * 60)
+    print(f"🤖 DEBUG: Sending request to {model_name} | Temp: {temp}")
+    print("-" * 60)
+    print("SYSTEM MESSAGE (Rules + Data):")
+    # We slice it to 1000 characters just so it doesn't flood your entire terminal,
+    # but you can remove the [:1000] if you want to see the whole massive string!
+    print(formatted_system_prompt[:1000] + "\n...[Text truncated for printing]...")
+    print("=" * 60 + "\n")
+
+
     try:
         response = ollama.chat(
             model=model_name,
             messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': text_input}
+                {'role': 'system',
+                 'content': formatted_system_prompt}
+
             ],
+            # instead system_prompt prompt template
             format=ExtractionResponse.model_json_schema(),
             options={"temperature": temp, "top_p": 0.1 if temp == 0.0 else 0.9}
         )
         json_content = response['message']['content']
         parsed_data = ExtractionResponse.model_validate_json(json_content)
+        print(f"✅ AI Output Parsed: {parsed_data}\n")
         return parsed_data, True, None
+
     except ValidationError as e:
         return None, False, "JSON Validation Error"
     except Exception as e:
@@ -170,7 +196,7 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
 
 
 def check_hallucination(parsed_data: ExtractionResponse, preamble_text: str) -> bool:
-    """Returns True if the AI extracted a name or affiliation NOT found in the text."""
+
     if not parsed_data:
         return False
 
