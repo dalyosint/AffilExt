@@ -6,7 +6,7 @@ import ollama
 import polars as pl
 from pydantic import BaseModel, ValidationError
 from typing import List, Optional
-
+from rapidfuzz import fuzz
 # existing pipeline tools
 import extract_cmds
 import extract_author_aff
@@ -21,14 +21,12 @@ class AuthorModel(BaseModel):
     name: str
     affiliations: List[str]
 
-
 class ExtractionResponse(BaseModel):
     authors: List[AuthorModel]
 
 
-
 def get_latex_preamble(text_content: str) -> str:
-    """
+    r"""
     Captures everything from Line 1 down to \maketitle, \begin{abstract},
     or the first \section. This safely accommodates Standard, KOMA, ACM,
     IEEE, and AMS document classes.
@@ -50,50 +48,37 @@ def get_latex_preamble(text_content: str) -> str:
         return target_text
 
     # 4. Backup plan if none of the triggers are found
-    print(" Warning: Could not find \maketitle, abstract, or section tags.")
+    print(r"Warning: Could not find \maketitle, abstract, or section tags.")
     return text_content[:5000]
 
 
-
-#  Define Prompts
-PROMPT_BASE = """Extract all authors and their affiliations following LaTeX preamble.
-<LATEX_PREAMBLE>
+# Prompts
+PROMPT_BASE = """Extract the authors and affiliations from this LaTeX text and return it as JSON.
 {text_input}
-</LATEX_PREAMBLE> 
 """
 
-PROMPT_CONSTRAINEDT = """Extract authors and affiliations from a LaTeX preamble.
+PROMPT_CONSTRAINED = """You are an academic data extraction AI.
+
+Extract authors and affiliations from a LaTeX preamble.
+
+Return JSON matching:
+{ExtractionResponse.model_json_schema()}
 
 Rules:
-- List all authors.
-- List all affiliations explicitly given.
-- Match authors to affiliations using only the text.
+- Extract only names and affiliations explicitly present.
+- Match authors to affiliations using the text.
+- Ignore LaTeX commands and formatting.
+- Do not include markers in output.
 - If none, use [].
 - No guessing.
-- Output valid JSON only.
-
-Example:
-Input:
-\\author{Alice Smith, Bob Johnson, Carol Lee}
-\\affil{ University Alpha}
-\\affil{ Institute Beta}
-
-Output:
-{"authors":[
-{"name":"Alice Smith","affiliations":["University Alpha"]},
-{"name":"Bob Johnson","affiliations":["Institute Beta"]},
-{"name":"Carol Lee","affiliations":[]}
-]}
-
-Format:
-{"authors":[{"name":"Author Name","affiliations":["Affiliation"]}]}
+- Output JSON only.
 
 <LATEX_PREAMBLE>
 {text_input}
 </LATEX_PREAMBLE>
 """
 
-PROMPT_SUPER = rf"""You are an expert academic data extraction AI.Extract authors and affiliations from a LaTeX preamble.
+PROMPT_SUPER = r"""You are an expert academic data extraction AI.Extract authors and affiliations from a LaTeX preamble.
 
 Return JSON matching:
 {ExtractionResponse.model_json_schema()}
@@ -137,11 +122,9 @@ Output:
   {{"name":"Detlef Duerr","affiliations":["Mathematisches Institut der Universität München, Theresienstraße 39, 80333 München, Germany"]}}
 ]}} 
 
-<LATEX_PREAMBLE>
 {text_input}
-</LATEX_PREAMBLE>
-"""
 
+"""
 
 PROMPTS = {
     "Base_Prompt": PROMPT_BASE,
@@ -150,7 +133,7 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["phi3:mini " , "gemma2:2b", "qwen2.5:0.5b"]
+MODELS = ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
 TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
 
@@ -164,13 +147,12 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
     # ==========================================
     print("\n" + "=" * 60)
     print(f"🤖 DEBUG: Sending request to {model_name} | Temp: {temp}")
-    print("-" * 60)
+    #print("-" * 60)
     print("SYSTEM MESSAGE (Rules + Data):")
     # We slice it to 1000 characters just so it doesn't flood your entire terminal,
-    # but you can remove the [:1000] if you want to see the whole massive string!
-    print(formatted_system_prompt[:1000] + "\n...[Text truncated for printing]...")
-    print("=" * 60 + "\n")
-
+    # but you can remove the [:3000] if you want to see the whole massive string!
+    #print(formatted_system_prompt[:3000] + "\n...[Text truncated for printing]...")
+    #print("=" * 60 + "\n")
 
     try:
         response = ollama.chat(
@@ -195,23 +177,34 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
         return None, False, str(e)
 
 
-def check_hallucination(parsed_data: ExtractionResponse, preamble_text: str) -> bool:
+# FIXED: Actually checks for the dummy names from the prompts!
+def check_hallucination(ai_output_authors: List[dict]) -> bool:
+    dummy_words = ["alice smith", "bob johnson", "carol lee", "university alpha", "institute beta",
+                   "karel pravda-starov", "peter pickl"]
 
-    if not parsed_data:
-        return False
+    # Flatten the AI output into a single lowercase string
+    ai_text = " ".join([a['name'] + " " + " ".join(a['affiliations']) for a in ai_output_authors]).lower()
 
-    clean_text = re.sub(r'\s+', ' ', preamble_text).lower()
-
-    for author in parsed_data.authors:
-        clean_name = re.sub(r'\s+', ' ', author.name).lower()
-        if clean_name not in clean_text:
+    for word in dummy_words:
+        if word in ai_text:
             return True
-
-        for aff in author.affiliations:
-            clean_aff = re.sub(r'\s+', ' ', aff).lower()
-            if clean_aff not in clean_text:
-                return True
     return False
+
+
+# Accurancy
+def calculate_accuracy(extracted_authors: List[dict], ground_truth_authors: List[dict]) -> float:
+    """Compares any extracted list against the TRUE metadata from the Parquet file."""
+    if not extracted_authors and ground_truth_authors:
+        return 0.0
+    if not extracted_authors and not ground_truth_authors:
+        return 1.0
+
+    ext_text = " ".join(
+        [a.get('name', '') + " " + " ".join(a.get('affiliations', [])) for a in extracted_authors]).lower()
+    truth_text = " ".join(
+        [a.get('name', '') + " " + " ".join(a.get('affiliations', [])) for a in ground_truth_authors]).lower()
+
+    return fuzz.ratio(ext_text, truth_text) / 100.0
 
 
 def main():
@@ -222,7 +215,7 @@ def main():
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 5
+    TEST_LIMIT = 20
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")
@@ -236,6 +229,16 @@ def main():
         full_latex = row['text']
         metadata_raw = row['metadata']
         meta_obj = parse_metadata(metadata_raw, paper_id)
+
+        # 1.  the Ground Truth
+        meta_obj = parse_metadata(metadata_raw, paper_id)
+        ground_truth_authors = []
+        if meta_obj and hasattr(meta_obj, 'authors'):
+            for author in meta_obj.authors:
+                ground_truth_authors.append({
+                    "name": getattr(author, 'name', ''),
+                    "affiliations": getattr(author, 'affiliations', [])
+                })
 
         # 1. Run Traditional Rule-Based
         ext_cmds_list = extract_cmds.extract_cmds_from_string(full_latex)
@@ -251,6 +254,8 @@ def main():
                         "affiliations": author.affiliations
                     })
 
+        rule_based_accuracy = calculate_accuracy(rule_based_authors_output, ground_truth_authors)
+
         preamble = get_latex_preamble(full_latex)
 
         # 2. Iterate Experiment Matrix
@@ -265,10 +270,12 @@ def main():
                     )
                     duration = round(time.time() - start_time, 2)
 
-                    is_hallucinated = check_hallucination(parsed_data, preamble) if is_valid else None
-
                     # Serialize AI Output
                     ai_output_authors = [a.model_dump() for a in parsed_data.authors] if is_valid else []
+
+                    # Run Metrics
+                    is_hallucinated = check_hallucination(ai_output_authors) if is_valid else None
+                    ai_accuracy = calculate_accuracy(ai_output_authors, ground_truth_authors) if is_valid else 0.0
 
                     # Build the JSON record
                     record = {
@@ -278,6 +285,8 @@ def main():
                         "temperature": temp,
                         "time_sec": duration,
                         "valid_json": is_valid,
+                        "ai_accuracy_score": ai_accuracy,
+                        "rule_based_accuracy_score": rule_based_accuracy,
                         "hallucinated": is_hallucinated,
                         "rule_based_output": rule_based_authors_output,
                         "ai_output": ai_output_authors,
@@ -294,4 +303,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
