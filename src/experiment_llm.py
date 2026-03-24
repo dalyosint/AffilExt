@@ -15,7 +15,6 @@ from pipeline_parquet import parse_metadata
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger("ExperimentRunner")
 
-
 # Pydantic Models
 class AuthorModel(BaseModel):
     name: str
@@ -23,34 +22,6 @@ class AuthorModel(BaseModel):
 
 class ExtractionResponse(BaseModel):
     authors: List[AuthorModel]
-
-
-def get_latex_preamble(text_content: str) -> str:
-    r"""
-    Captures everything from Line 1 down to \maketitle, \begin{abstract},
-    or the first \section. This safely accommodates Standard, KOMA, ACM,
-    IEEE, and AMS document classes.
-    """
-    # 1. Look for the commands that officially start the "Body Text"
-    # We use re.IGNORECASE just in case someone typed \MakeTitle
-    cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
-    match = re.search(cut_triggers, text_content, re.IGNORECASE)
-
-    if match:
-        # 2. Cut the document right before the body text begins
-        target_text = text_content[:match.start()]
-
-        # 3. Limit to the BOTTOM 5000 characters of our cut.
-        # This throws away the massive wall of \usepackage commands at the top,
-        # leaving the clean author/title metadata at the bottom for the AI.
-        if len(target_text) > 5000:
-            return target_text[-5000:]
-        return target_text
-
-    # 4. Backup plan if none of the triggers are found
-    print(r"Warning: Could not find \maketitle, abstract, or section tags.")
-    return text_content[:5000]
-
 
 # Prompts
 PROMPT_BASE = """Extract the authors and affiliations from this LaTeX text and return it as JSON.
@@ -136,6 +107,31 @@ PROMPTS = {
 MODELS = ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
 TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
+def get_latex_preamble(text_content: str) -> str:
+    r"""
+    Captures everything from Line 1 down to \maketitle, \begin{abstract},
+    or the first \section. This safely accommodates Standard, KOMA, ACM,
+    IEEE, and AMS document classes.
+    """
+    # 1. Look for the commands that officially start the "Body Text"
+    # We use re.IGNORECASE just in case someone typed \MakeTitle
+    cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
+    match = re.search(cut_triggers, text_content, re.IGNORECASE)
+
+    if match:
+        # 2. Cut the document right before the body text begins
+        target_text = text_content[:match.start()]
+
+        # 3. Limit to the BOTTOM 5000 characters of our cut.
+        # This throws away the massive wall of \usepackage commands at the top,
+        # leaving the clean author/title metadata at the bottom for the AI.
+        if len(target_text) > 5000:
+            return target_text[-5000:]
+        return target_text
+
+    # 4. Backup plan if none of the triggers are found
+    print(r"Warning: Could not find \maketitle, abstract, or section tags.")
+    return text_content[:5000]
 
 def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
     """Custom extraction function to allow dynamic prompts and parameters."""
@@ -177,34 +173,103 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
         return None, False, str(e)
 
 
-# FIXED: Actually checks for the dummy names from the prompts!
-def check_hallucination(ai_output_authors: List[dict]) -> bool:
-    dummy_words = ["alice smith", "bob johnson", "carol lee", "university alpha", "institute beta",
-                   "karel pravda-starov", "peter pickl"]
-
-    # Flatten the AI output into a single lowercase string
-    ai_text = " ".join([a['name'] + " " + " ".join(a['affiliations']) for a in ai_output_authors]).lower()
-
-    for word in dummy_words:
-        if word in ai_text:
-            return True
-    return False
-
-
-# Accurancy
-def calculate_accuracy(extracted_authors: List[dict], ground_truth_authors: List[dict]) -> float:
-    """Compares any extracted list against the TRUE metadata from the Parquet file."""
-    if not extracted_authors and ground_truth_authors:
-        return 0.0
+def calculate_metrics_robust(extracted_authors, ground_truth_authors):
+    """
+    Calculates Precision, Recall, and F1-score for both Authors and Affiliations.
+    Precision mathematically doubles as the Hallucination metric (e.g., 0.6 Precision = 40% Hallucination).
+    """
     if not extracted_authors and not ground_truth_authors:
-        return 1.0
+        return {
+            "precision": 1.0, "recall": 1.0, "f1_score": 1.0,
+            "aff_precision": 1.0, "aff_recall": 1.0, "aff_f1": 1.0
+        }
 
-    ext_text = " ".join(
-        [a.get('name', '') + " " + " ".join(a.get('affiliations', [])) for a in extracted_authors]).lower()
-    truth_text = " ".join(
-        [a.get('name', '') + " " + " ".join(a.get('affiliations', [])) for a in ground_truth_authors]).lower()
+    if not extracted_authors:
+        return {
+            "precision": 0.0, "recall": 0.0, "f1_score": 0.0,
+            "aff_precision": 0.0, "aff_recall": 0.0, "aff_f1": 0.0
+        }
 
-    return fuzz.ratio(ext_text, truth_text) / 100.0
+    matched_gt = set()
+    matched_pairs = []
+
+    # --- STEP 1: One-to-one matching ---
+    for i, ext_author in enumerate(extracted_authors):
+        e_name = ext_author.get("name", "").lower().strip()
+        best_idx = -1
+        best_score = 0
+
+        for j, gt_author in enumerate(ground_truth_authors):
+            if j in matched_gt:
+                continue
+
+            t_name = gt_author.get("name", "").lower().strip()
+            score = fuzz.ratio(e_name, t_name)
+
+            if score > best_score:
+                best_score = score
+                best_idx = j
+
+        if best_score >= 80:
+            matched_gt.add(best_idx)
+            matched_pairs.append((i, best_idx))
+
+    true_positives = len(matched_pairs)
+
+    # --- STEP 2: Precision / Recall (Authors) ---
+    precision = true_positives / len(extracted_authors)
+    recall = true_positives / len(ground_truth_authors) if ground_truth_authors else 0.0
+
+    f1 = (2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0)
+
+    # --- STEP 3: Affiliation Metrics ---
+    aff_tp = 0
+    aff_pred_total = 0
+    aff_gt_total = 0
+
+    for ext_idx, gt_idx in matched_pairs:
+        ext_affs = extracted_authors[ext_idx].get("affiliations", [])
+        gt_affs = ground_truth_authors[gt_idx].get("affiliations", [])
+
+        ext_affs = [a.lower().strip() for a in ext_affs if a.strip()]
+        gt_affs = [a.lower().strip() for a in gt_affs if a.strip()]
+
+        aff_pred_total += len(ext_affs)
+        aff_gt_total += len(gt_affs)
+
+        used_gt = set()
+
+        for e_aff in ext_affs:
+            best_score = 0
+            best_j = -1
+
+            for j, t_aff in enumerate(gt_affs):
+                if j in used_gt:
+                    continue
+
+                score = fuzz.token_set_ratio(e_aff, t_aff)
+
+                if score > best_score:
+                    best_score = score
+                    best_j = j
+
+            if best_score >= 70:
+                aff_tp += 1
+                used_gt.add(best_j)
+
+    aff_precision = aff_tp / aff_pred_total if aff_pred_total else 0.0
+    aff_recall = aff_tp / aff_gt_total if aff_gt_total else 0.0
+
+    aff_f1 = (2 * aff_precision * aff_recall / (aff_precision + aff_recall) if aff_precision + aff_recall > 0 else 0.0)
+
+    return {
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1_score": round(f1, 4),
+        "aff_precision": round(aff_precision, 4),
+        "aff_recall": round(aff_recall, 4),
+        "aff_f1": round(aff_f1, 4)
+    }
 
 
 def main():
@@ -228,7 +293,6 @@ def main():
 
         full_latex = row['text']
         metadata_raw = row['metadata']
-        meta_obj = parse_metadata(metadata_raw, paper_id)
 
         # 1.  the Ground Truth
         meta_obj = parse_metadata(metadata_raw, paper_id)
@@ -254,8 +318,7 @@ def main():
                         "affiliations": author.affiliations
                     })
 
-        rule_based_accuracy = calculate_accuracy(rule_based_authors_output, ground_truth_authors)
-
+        rule_based_metrics = calculate_metrics_robust(rule_based_authors_output, ground_truth_authors)
         preamble = get_latex_preamble(full_latex)
 
         # 2. Iterate Experiment Matrix
@@ -274,8 +337,13 @@ def main():
                     ai_output_authors = [a.model_dump() for a in parsed_data.authors] if is_valid else []
 
                     # Run Metrics
-                    is_hallucinated = check_hallucination(ai_output_authors) if is_valid else None
-                    ai_accuracy = calculate_accuracy(ai_output_authors, ground_truth_authors) if is_valid else 0.0
+                    if is_valid:
+                        ai_metrics = calculate_metrics_robust(ai_output_authors, ground_truth_authors)
+                    else:
+                        ai_metrics = {
+                            "precision": 0.0, "recall": 0.0, "f1_score": 0.0,
+                            "aff_precision": 0.0, "aff_recall": 0.0, "aff_f1": 0.0
+                        }
 
                     # Build the JSON record
                     record = {
@@ -285,13 +353,24 @@ def main():
                         "temperature": temp,
                         "time_sec": duration,
                         "valid_json": is_valid,
-                        "ai_accuracy_score": ai_accuracy,
-                        "rule_based_accuracy_score": rule_based_accuracy,
-                        "hallucinated": is_hallucinated,
+
+                        # AI Author Metrics
+                        "ai_author_f1": ai_metrics["f1_score"],
+                        "ai_author_precision": ai_metrics["precision"],  # (Hallucination metric)
+                        "ai_author_recall": ai_metrics["recall"],  # (Missed author metric)
+
+                        # AI Affiliation Metrics
+                        "ai_aff_f1": ai_metrics["aff_f1"],
+                        "ai_aff_precision": ai_metrics["aff_precision"],  # (Hallucination metric)
+                        "ai_aff_recall": ai_metrics["aff_recall"],  # (Missed affiliation metric)
+
+                        # Baseline (Rule-based) Comparison
+                        "rule_based_author_f1": rule_based_metrics["f1_score"],
+                        "rule_based_aff_f1": rule_based_metrics["aff_f1"],
+
                         "rule_based_output": rule_based_authors_output,
                         "ai_output": ai_output_authors,
-                        "error_msg": error_msg
-                    }
+                        "error_msg": error_msg }
                     experiment_results.append(record)
 
     # output the  JSON file
