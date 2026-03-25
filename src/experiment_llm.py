@@ -106,7 +106,7 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["gemma2:2b" ] #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
+MODELS = ["gemma2:2b"] #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
 TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
 def get_latex_preamble(text_content: str) -> str:
@@ -115,25 +115,26 @@ def get_latex_preamble(text_content: str) -> str:
     or the first \section. This safely accommodates Standard, KOMA, ACM,
     IEEE, and AMS document classes.
     """
-    # 1. Look for the commands that officially start the "Body Text"
-    # We use re.IGNORECASE just in case someone typed \MakeTitle
+    # Look for the commands that officially start the "Body Text"
+    # re.IGNORECASE just in case someone typed \MakeTitle
     cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
     match = re.search(cut_triggers, text_content, re.IGNORECASE)
 
     if match:
-        # 2. Cut the document right before the body text begins
+        # Cut the document right before the body text begins
         target_text = text_content[:match.start()]
 
-        # 3. Limit to the BOTTOM 5000 characters of our cut.
+        # Limit to the BOTTOM 5000 characters of our cut.
         # This throws away the massive wall of \usepackage commands at the top,
         # leaving the clean author/title metadata at the bottom for the AI.
         if len(target_text) > 5000:
             return target_text[-5000:]
         return target_text
 
-    # 4. Backup plan if none of the triggers are found
+    #  Backup plan if none of the triggers are found
     print(r"Warning: Could not find \maketitle, abstract, or section tags.")
     return text_content[:5000]
+
 
 
 def _call_ollama_api(model_name, messages, temp):
@@ -190,36 +191,37 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp, 
 def calculate_metrics_robust(extracted_authors, ground_truth_authors):
     """
     Calculates Precision, Recall, and F1-score for both Authors and Affiliations.
-    Precision mathematically doubles as the Hallucination metric (e.g., 0.6 Precision = 40% Hallucination).
+
     """
+
+    # paper  has 0 authors, and the AI extracted 0 authors, the AI did a perfect job
     if not extracted_authors and not ground_truth_authors:
-        return {
-            "precision": 1.0, "recall": 1.0, "f1_score": 1.0,
-            "aff_precision": 1.0, "aff_recall": 1.0, "aff_f1": 1.0
-        }
+        return {"precision": 1.0, "recall": 1.0, "f1_score": 1.0}
 
+    # paper has authors, but the AI extracted nothing, it completely failed
     if not extracted_authors:
-        return {
-            "precision": 0.0, "recall": 0.0, "f1_score": 0.0,
-            "aff_precision": 0.0, "aff_recall": 0.0, "aff_f1": 0.0
-        }
+        return {"precision": 0.0, "recall": 0.0, "f1_score": 0.0}
 
+    # Author extraction
+    # memory tracker ( against cheating )
     matched_gt = set()
+    # stores the successful matched
     matched_pairs = []
 
-    # --- STEP 1: One-to-one matching ---
+    #  One-to-one matching
     for i, ext_author in enumerate(extracted_authors):
         e_name = ext_author.get("name", "").lower().strip()
         best_idx = -1
         best_score = 0
 
+        # For every author the AI guessed, we compare it to every real author
         for j, gt_author in enumerate(ground_truth_authors):
             if j in matched_gt:
                 continue
 
             t_name = gt_author.get("name", "").lower().strip()
+            # author need strict matching
             score = fuzz.ratio(e_name, t_name)
-
             if score > best_score:
                 best_score = score
                 best_idx = j
@@ -228,61 +230,21 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
             matched_gt.add(best_idx)
             matched_pairs.append((i, best_idx))
 
+    # The model prediction that was correct
     true_positives = len(matched_pairs)
 
-    # --- STEP 2: Precision / Recall (Authors) ---
+    # Precision / Recall (Authors)
+    # Precision (The Anti-Hallucination Metric) (Correct Guesses) / (Total Guesses Made).
     precision = true_positives / len(extracted_authors)
+    # Recall (The Anti-Forgetting Metric)  (Correct Guesses) / (Total Real Authors That Exist)
     recall = true_positives / len(ground_truth_authors) if ground_truth_authors else 0.0
-
+    # Harmonic Mean
     f1 = (2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0)
-
-    # --- STEP 3: Affiliation Metrics ---
-    aff_tp = 0
-    aff_pred_total = 0
-    aff_gt_total = 0
-
-    for ext_idx, gt_idx in matched_pairs:
-        ext_affs = extracted_authors[ext_idx].get("affiliations", [])
-        gt_affs = ground_truth_authors[gt_idx].get("affiliations", [])
-
-        ext_affs = [a.lower().strip() for a in ext_affs if a.strip()]
-        gt_affs = [a.lower().strip() for a in gt_affs if a.strip()]
-
-        aff_pred_total += len(ext_affs)
-        aff_gt_total += len(gt_affs)
-
-        used_gt = set()
-
-        for e_aff in ext_affs:
-            best_score = 0
-            best_j = -1
-
-            for j, t_aff in enumerate(gt_affs):
-                if j in used_gt:
-                    continue
-
-                score = fuzz.token_set_ratio(e_aff, t_aff)
-
-                if score > best_score:
-                    best_score = score
-                    best_j = j
-
-            if best_score >= 70:
-                aff_tp += 1
-                used_gt.add(best_j)
-
-    aff_precision = aff_tp / aff_pred_total if aff_pred_total else 0.0
-    aff_recall = aff_tp / aff_gt_total if aff_gt_total else 0.0
-
-    aff_f1 = (2 * aff_precision * aff_recall / (aff_precision + aff_recall) if aff_precision + aff_recall > 0 else 0.0)
 
     return {
         "precision": round(precision, 4),
         "recall": round(recall, 4),
-        "f1_score": round(f1, 4),
-        "aff_precision": round(aff_precision, 4),
-        "aff_recall": round(aff_recall, 4),
-        "aff_f1": round(aff_f1, 4)
+        "f1_score": round(f1, 4)
     }
 
 
@@ -309,7 +271,7 @@ def main():
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 30
+    TEST_LIMIT = 5
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")
@@ -323,20 +285,21 @@ def main():
         full_latex = row['text']
         metadata_raw = row['metadata']
 
-        # 1.  the Ground Truth
+        # the Ground truth
         meta_obj = parse_metadata(metadata_raw, paper_id)
         ground_truth_authors = []
-        if meta_obj and hasattr(meta_obj, 'authors'):
+        if meta_obj:  # Just check if parsing succeeded (didn't return None)
             for author in meta_obj.authors:
                 ground_truth_authors.append({
-                    "name": getattr(author, 'name', ''),
-                    "affiliations": getattr(author, 'affiliations', [])
+                    "name": author.name,
+                    "affiliations": []  # Hardcode to empty list since we know they don't exist
                 })
 
+
         # 1. Run Traditional Rule-Based
+
         ext_cmds_list = extract_cmds.extract_cmds_from_string(full_latex)
         ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds_list, meta_obj)
-
         # Serialize the Rule-Based Output to a list of dicts for clean JSON comparison
         rule_based_authors_output = []
         if ext_info_trad and ext_info_trad.extractions:
@@ -348,8 +311,9 @@ def main():
                     })
 
         rule_based_metrics = calculate_metrics_robust(rule_based_authors_output, ground_truth_authors)
-        preamble = get_latex_preamble(full_latex)
 
+
+        preamble = get_latex_preamble(full_latex)
         # 2. Iterate Experiment Matrix
         for model in MODELS:
             for prompt_name, prompt_content in PROMPTS.items():
@@ -375,8 +339,7 @@ def main():
                         ai_metrics = calculate_metrics_robust(ai_output_authors, ground_truth_authors)
                     else:
                         ai_metrics = {
-                            "precision": 0.0, "recall": 0.0, "f1_score": 0.0,
-                            "aff_precision": 0.0, "aff_recall": 0.0, "aff_f1": 0.0
+                            "precision": 0.0, "recall": 0.0, "f1_score": 0.0
                         }
 
                     # Build the JSON record
@@ -393,14 +356,9 @@ def main():
                         "ai_author_precision": ai_metrics["precision"],  # (Hallucination metric)
                         "ai_author_recall": ai_metrics["recall"],  # (Missed author metric)
 
-                        # AI Affiliation Metrics
-                        "ai_aff_f1": ai_metrics["aff_f1"],
-                        "ai_aff_precision": ai_metrics["aff_precision"],  # (Hallucination metric)
-                        "ai_aff_recall": ai_metrics["aff_recall"],  # (Missed affiliation metric)
-
                         # Baseline (Rule-based) Comparison
                         "rule_based_author_f1": rule_based_metrics["f1_score"],
-                        "rule_based_aff_f1": rule_based_metrics["aff_f1"],
+
 
                         "rule_based_output": rule_based_authors_output,
                         "ai_output": ai_output_authors,
@@ -412,13 +370,12 @@ def main():
                     f.flush()
                     os.fsync(f.fileno())  # Belt-and-suspenders approach to force drive write
 
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f_final:
-        json.dump(experiment_results, f_final, indent=4, ensure_ascii=False)
+                    # Output a final compiled JSON file if the script successfully finishes everything
+                with open(OUTPUT_JSON, "w", encoding="utf-8") as f_final:
+                    json.dump(experiment_results, f_final, indent=4, ensure_ascii=False)
 
-    logger.info(f"Experiment complete! Results saved cleanly to {OUTPUT_JSON}")
+                logger.info(f"Experiment complete! Results saved cleanly to {OUTPUT_JSON}")
 
-    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    f.flush()  # Forces the computer to save it to the hard drive right now
 
 if __name__ == "__main__":
     main()
