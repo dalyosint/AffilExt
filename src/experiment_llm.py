@@ -2,7 +2,9 @@ import json
 import time
 import logging
 import re
+import os
 import ollama
+import concurrent.futures
 import polars as pl
 from pydantic import BaseModel, ValidationError
 from typing import List, Optional
@@ -104,7 +106,7 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
+MODELS = ["gemma2:2b" ] #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
 TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
 def get_latex_preamble(text_content: str) -> str:
@@ -133,44 +135,56 @@ def get_latex_preamble(text_content: str) -> str:
     print(r"Warning: Could not find \maketitle, abstract, or section tags.")
     return text_content[:5000]
 
-def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp):
-    """Custom extraction function to allow dynamic prompts and parameters."""
 
+def _call_ollama_api(model_name, messages, temp):
+    """The raw API call that we will wrap in a timer."""
+    return ollama.chat(
+        model=model_name,
+        messages=messages,
+        format=ExtractionResponse.model_json_schema(),
+        options={"temperature": temp, "top_p": 0.1 if temp == 0.0 else 0.9}
+    )
+
+
+def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp, timeout_seconds=90):
     formatted_system_prompt = system_prompt.replace("{text_input}", text_input)
+    messages = [{'role': 'system', 'content': formatted_system_prompt}]
 
-    # ==========================================
-    # DEBUG: PRINT STATEMENTS TO SEE AI INPUT
-    # ==========================================
     print("\n" + "=" * 60)
     print(f"🤖 DEBUG: Sending request to {model_name} | Temp: {temp}")
-    #print("-" * 60)
     print("SYSTEM MESSAGE (Rules + Data):")
-    # We slice it to 1000 characters just so it doesn't flood your entire terminal,
-    # but you can remove the [:3000] if you want to see the whole massive string!
-    #print(formatted_system_prompt[:3000] + "\n...[Text truncated for printing]...")
-    #print("=" * 60 + "\n")
+
+    # Instantiate the executor WITHOUT the 'with' block
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_call_ollama_api, model_name, messages, temp)
 
     try:
-        response = ollama.chat(
-            model=model_name,
-            messages=[
-                {'role': 'system',
-                 'content': formatted_system_prompt}
-
-            ],
-            # instead system_prompt prompt template
-            format=ExtractionResponse.model_json_schema(),
-            options={"temperature": temp, "top_p": 0.1 if temp == 0.0 else 0.9}
-        )
+        # Wait for the result, kill if it exceeds timeout
+        response = future.result(timeout=timeout_seconds)
         json_content = response['message']['content']
         parsed_data = ExtractionResponse.model_validate_json(json_content)
         print(f"✅ AI Output Parsed: {parsed_data}\n")
         return parsed_data, True, None
 
-    except ValidationError as e:
+    except concurrent.futures.TimeoutError:
+        # 1. This logs to your terminal so you can see it happening
+        logger.error(f"🚨 BOOM! TIMEOUT: {model_name} took too long! Skipping to the next one.")
+
+        # 2. You can also add a standard print statement if you prefer
+        print(f"⚠️ [CUSTOM MESSAGE] The model {model_name} choked on this paper. Moving on!")
+
+        # 3. This string gets saved into your JSONL file under the 'error_msg' key
+        return None, False, f"Custom Timeout Error: Model failed to respond within {timeout_seconds} seconds."
+
+    except ValidationError:
         return None, False, "JSON Validation Error"
     except Exception as e:
         return None, False, str(e)
+    finally:
+        # THE MAGIC FIX: Force the executor to shut down WITHOUT waiting
+        # for the stuck thread. This allows your script to actually move on!
+        executor.shutdown(wait=False, cancel_futures=True)
+
 
 
 def calculate_metrics_robust(extracted_authors, ground_truth_authors):
@@ -274,20 +288,35 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
 
 def main():
     INPUT_FILE = "math_100.parquet"
-    OUTPUT_JSON = "ai_experiment_results.json"
+    OUTPUT_JSONL = "ai_experiment_results.jsonl"
+    OUTPUT_JSON = "ai_experiment_results_final.json"
+
+    # 1. READ EXISTING RESULTS TO RESUME WHERE WE LEFT OFF
+    processed_configs = set()
+    if os.path.exists(OUTPUT_JSONL):
+        with open(OUTPUT_JSONL, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                    config_key = f"{record['arxiv_id']}_{record['model']}_{record['prompt_type']}"
+                    processed_configs.add(config_key)
+                except json.JSONDecodeError:
+                    continue  # Ignore corrupted lines
+        logger.info(f"Resuming experiment. Found {len(processed_configs)} already completed runs.")
+
 
     logger.info(f"Loading {INPUT_FILE}...")
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 20
+    TEST_LIMIT = 30
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")
 
     experiment_results = []
-
-    for row in test_rows:
+    with open(OUTPUT_JSONL, "a", encoding="utf-8") as f:
+     for row in test_rows:
         paper_id = row.get('id', 'Unknown')
         logger.info(f"--- Processing Paper {paper_id} ---")
 
@@ -324,6 +353,11 @@ def main():
         # 2. Iterate Experiment Matrix
         for model in MODELS:
             for prompt_name, prompt_content in PROMPTS.items():
+                current_config_key = f"{paper_id}_{model}_{prompt_name}"
+                if current_config_key in processed_configs:
+                    logger.info(f"Skipping {current_config_key} - Already processed.")
+                    continue  # Skip to the next one!
+
                 for temp in TEMPERATURES:
                     logger.info(f"Running {model} | {prompt_name} | Temp: {temp}")
 
@@ -373,12 +407,18 @@ def main():
                         "error_msg": error_msg }
                     experiment_results.append(record)
 
-    # output the  JSON file
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(experiment_results, f, indent=4, ensure_ascii=False)
+                    # THE MAGIC FIX 2: Write and flush IMMEDIATELY after creating the record
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())  # Belt-and-suspenders approach to force drive write
+
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f_final:
+        json.dump(experiment_results, f_final, indent=4, ensure_ascii=False)
 
     logger.info(f"Experiment complete! Results saved cleanly to {OUTPUT_JSON}")
 
+    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    f.flush()  # Forces the computer to save it to the hard drive right now
 
 if __name__ == "__main__":
     main()
