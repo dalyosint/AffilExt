@@ -208,33 +208,6 @@ def main():
     logger.info(f"Processing time: {processing_time:.2f} seconds")
     logger.info(f"Processing time: {processing_time / 60:.2f} minutes")
 
-    # PLOTTING DIAGNOSTICS
-    logger.info("Generating diagnostic plots...")
-
-    plt.figure(figsize=(10, 6))
-    plt.hist(paper_processing_times, bins=50, color='skyblue', edgecolor='black')
-    plt.title('Distribution of Processing Times per Paper (Streaming + Multiprocessing)')
-    plt.xlabel('Processing Time (seconds)')
-    plt.ylabel('Number of Papers')
-    plt.grid(axis='y', alpha=0.75)
-    plt.savefig('processing_times_histogram_multiprocess.png')
-    plt.close()
-
-    categories = ['Success', 'Extraction Failed', 'Matching Failed']
-    counts = [success_count, extraction_failed_count, matching_failed_count]
-
-    plt.figure(figsize=(8, 6))
-    bars = plt.bar(categories, counts, color=['#4CAF50', '#F44336', '#FF9800'], edgecolor='black')
-    plt.title('Paper Processing Outcomes (Streaming + Multiprocessing)')
-    plt.ylabel('Number of Papers')
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width() / 2, yval + (max(counts) * 0.01), int(yval), ha='center', va='bottom',
-                 fontweight='bold')
-    plt.savefig('processing_outcomes_bar_multiprocess.png')
-    plt.close()
-    # ----------------------------
-
     logger.info(f"Success! Final streamed output saved to {OUTPUT_FILE}")
 
     total_end_time = time.time()
