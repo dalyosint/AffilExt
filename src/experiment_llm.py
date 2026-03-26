@@ -106,7 +106,7 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["gemma2:2b"] #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
+MODELS = ["qwen2.5:0.5b", "gemma2:2b", "phi3:mini"]   #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
 TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
 def get_latex_preamble(text_content: str) -> str:
@@ -155,20 +155,23 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp, 
     print(f"🤖 DEBUG: Sending request to {model_name} | Temp: {temp}")
     print("SYSTEM MESSAGE (Rules + Data):")
 
-    # Instantiate the executor WITHOUT the 'with' block
+    #  create a worker
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    # we call the ollama api
     future = executor.submit(_call_ollama_api, model_name, messages, temp)
 
     try:
         # Wait for the result, kill if it exceeds timeout
         response = future.result(timeout=timeout_seconds)
         json_content = response['message']['content']
+        # json evaluation
         parsed_data = ExtractionResponse.model_validate_json(json_content)
         print(f"✅ AI Output Parsed: {parsed_data}\n")
+        # no json was outputed
         return parsed_data, True, None
 
     except concurrent.futures.TimeoutError:
-        # 1. This logs to your terminal so you can see it happening
+        # limit run out ( 3 minutes )
         logger.error(f"🚨 BOOM! TIMEOUT: {model_name} took too long! Skipping to the next one.")
 
         # 2. You can also add a standard print statement if you prefer
@@ -182,8 +185,7 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp, 
     except Exception as e:
         return None, False, str(e)
     finally:
-        # THE MAGIC FIX: Force the executor to shut down WITHOUT waiting
-        # for the stuck thread. This allows your script to actually move on!
+        # we kill the worker
         executor.shutdown(wait=False, cancel_futures=True)
 
 
@@ -247,6 +249,48 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
         "f1_score": round(f1, 4)
     }
 
+def evaluate_experiment(json_file):
+        """Reads the final JSON results and calculates benchmark metrics using Polars."""
+
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 FINAL BENCHMARKING RESULTS")
+        logger.info("=" * 60)
+
+        if not os.path.exists(json_file):
+            logger.error(f"Could not find {json_file} to evaluate.")
+            return
+
+        # Load the JSON file into a Polars DataFrame
+        df = pl.read_json(json_file, schema_overrides={"error_msg": pl.String})
+
+        # Group by prompt_type and calculate our metrics
+        summary_df = df.group_by("model", "prompt_type").agg([
+            # 1. Average F1 Score
+            pl.col("ai_author_f1").mean().round(4).alias("avg_f1"),
+
+            # 1b. Average Precision & Recall (for deeper insights)
+            pl.col("ai_author_precision").mean().round(4).alias("avg_precision"),
+            pl.col("ai_author_recall").mean().round(4).alias("avg_recall"),
+
+            # 2. Percentage of Valid JSON outputs
+            (pl.col("valid_json").cast(pl.Int32).mean() * 100).round(2).alias("valid_json_percent"),
+
+            # 3. Average Execution Time
+            pl.col("time_sec").mean().round(2).alias("avg_time_sec"),
+
+            # Total times this prompt was tested
+            # pl.len().alias("total_runs")
+
+         ]).sort(["model", "avg_f1"], descending=[False, True])   # Sort so the best F1 score is at the top
+
+        print("\n")
+        print(summary_df)
+
+        # Optionally save this summary to a CSV for easy viewing later
+        summary_df.write_csv("prompt_benchmark_summary.csv")
+        logger.info("✅ Summary saved to prompt_benchmark_summary.csv")
+        print("=" * 50 + "\n")
+
 
 def main():
     INPUT_FILE = "math_100.parquet"
@@ -271,7 +315,7 @@ def main():
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 5
+    TEST_LIMIT = 30
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")
@@ -371,11 +415,11 @@ def main():
                     os.fsync(f.fileno())  # Belt-and-suspenders approach to force drive write
 
                     # Output a final compiled JSON file if the script successfully finishes everything
-                with open(OUTPUT_JSON, "w", encoding="utf-8") as f_final:
-                    json.dump(experiment_results, f_final, indent=4, ensure_ascii=False)
+     with open(OUTPUT_JSON, "w", encoding="utf-8") as f_final:
+        json.dump(experiment_results, f_final, indent=4, ensure_ascii=False)
 
-                logger.info(f"Experiment complete! Results saved cleanly to {OUTPUT_JSON}")
-
+     logger.info(f"Experiment complete! Results saved cleanly to {OUTPUT_JSON}")
+     evaluate_experiment(OUTPUT_JSON)
 
 if __name__ == "__main__":
     main()
