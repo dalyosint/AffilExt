@@ -238,9 +238,6 @@ def run(paper_dirs: list[Path]) -> None:
 
 
 
-
-
-
 # Takes the commands object and metadata directly
 
 def extract_affiliations_from_obj(ext_cmds: ExtCmdData, arxiv_metadata: ArxivMetadata) -> ExtAuthorInfo:
