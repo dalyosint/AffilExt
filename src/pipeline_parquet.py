@@ -25,7 +25,9 @@ import util
 from definition.data.ArxivMetadata import ArxivMetadata
 from definition.data.Author import Author
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+
+# you can see which cpu worker is working
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - [%(processName)s] - %(levelname)s - %(message)s')
 logger = logging.getLogger("ParquetPipeline")
 
 # json_str: str , arxiv_id: str  = input
@@ -66,6 +68,8 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
     paper_start_time = time.perf_counter()
     paper_id = row.get('id', 'Unknown')
 
+    logger.debug(f"[{paper_id}] Starting processing...")
+
     extracted_result = None
     matched_result = None
     ai_result = None
@@ -74,22 +78,31 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
     try:
         full_latex_text = row['text']
         metadata_raw = row['metadata']
+
+        logger.debug(f"[{paper_id}] Parsing metadata...")
         meta_obj = parse_metadata(metadata_raw, paper_id)
         ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
         # 1. ALWAYS run Traditional Extraction
+        logger.debug(f"[{paper_id}] Running Traditional Extraction...")
         ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
         if ext_info_trad:
             extracted_result = jsonpickle.encode(ext_info_trad)
+            logger.debug(f"[{paper_id}] Traditional extraction SUCCESS.")
+        else:
+            logger.debug(f"[{paper_id}] Traditional extraction FAILED/EMPTY.")
+
 
         # 2. ALWAYS run AI Extraction (The Experiment)
         logger.info(f"Running AI extraction for {paper_id}...")
         ext_info_ai = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
         if ext_info_ai:
             ai_result = jsonpickle.encode(ext_info_ai)
+            logger.debug(f"[{paper_id}] AI extraction SUCCESS.")
+        else:
+            logger.debug(f"[{paper_id}] AI extraction FAILED/EMPTY.")
 
         # 3. Choose which one to use for ROR Matching
-        # We prefer traditional, but fallback to AI if traditional failed
         ext_info_for_matching = ext_info_trad if ext_info_trad else ext_info_ai
 
         if ext_info_for_matching:
@@ -98,17 +111,23 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
             )
 
             if final_data:
+                logger.debug(f"[{paper_id}] Running ROR Matching...")
                 matched_result = jsonpickle.encode(final_data)
                 status = "success"
+                logger.debug(f"[{paper_id}] Match SUCCESS.")
             else:
                 status = "matching_failed"
+                logger.debug(f"[{paper_id}] Match FAILED .")
 
     except Exception as e:
-        logger.error(f"Failed processing paper {paper_id}: {e}")
+        logger.error(f"[{paper_id}] Failed processing paper: {e}", exc_info=True )
         status = "pipeline_error"
 
     paper_end_time = time.perf_counter()
     duration = paper_end_time - paper_start_time
+
+    if duration > 15.0:
+        logger.warning(f"[{paper_id}] SLOW PROCESSING: Took {duration:.2f} seconds")
 
     return extracted_result, matched_result, ai_result, status, duration
 
@@ -128,11 +147,12 @@ def main():
 
     logger.info(f"Step 2: Preparing to stream Input Parquet {INPUT_FILE}...")
 
+
     # Create a partial function with the ROR data permanently attached to it
     worker_func = partial(process_single_paper, ror_orgs=ror_orgs, ror_orgs_dict=ror_orgs_dict)
 
-    MAX_CORES = 4
-    BATCH_SIZE = 50 # Number of rows to load into RAM at a time
+    MAX_CORES = 2
+    BATCH_SIZE = 50
 
     # Diagnostics tracking
     success_count = 0
@@ -147,15 +167,19 @@ def main():
     parquet_file = pq.ParquetFile(INPUT_FILE)
     parquet_writer = None
 
+    batch_counter = 1
     # ProcessPoolExecutor keeps the cores busy
     with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_CORES) as executor:
 
         # iter_batches() streams the file in chunks without loading everything into memory
         for batch in parquet_file.iter_batches(batch_size=BATCH_SIZE):
-
+            logger.info(f"--- Starting Batch {batch_counter} ({BATCH_SIZE} rows) ---")
             # Convert PyArrow batch to Polars DataFrame, then to dicts
             df_batch = pl.from_arrow(batch)
             rows = df_batch.to_dicts()
+
+
+
 
             # Execute the batch in parallel
             # While one row waits for AI, another core picks up the next row for extraction
@@ -166,6 +190,9 @@ def main():
             matched_results_column = []
             ai_results_column = []
 
+            batch_success = 0
+            batch_match_fail = 0
+            batch_ext_fail = 0
             # Unpack the results
             for ext_res, match_res, ai_res, status, duration in results:
                 extracted_results_column.append(ext_res)
@@ -197,6 +224,16 @@ def main():
 
             parquet_writer.write_table(result_table)
             logger.info(f"Successfully processed and wrote a batch of {len(rows)} rows.")
+
+
+
+
+            logger.info(f"Finished Batch {batch_counter}. "
+                        f"Stats: {batch_success} Success | "
+                        f"{batch_match_fail} Match Fail | "
+                        f"{batch_ext_fail} Ext Fail")
+            batch_counter += 1
+
 
     # Close the writer once all streaming is done
     if parquet_writer:
