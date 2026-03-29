@@ -134,7 +134,7 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
 
 def main():
 
-    INPUT_FILE = "math_100.parquet"
+    INPUT_FILE = "math_only_sample_500.parquet"
     OUTPUT_FILE = "math_sample_processed.parquet"
 
     # start time
@@ -225,8 +225,13 @@ def main():
             parquet_writer.write_table(result_table)
             logger.info(f"Successfully processed and wrote a batch of {len(rows)} rows.")
 
-
-
+            for _, _, _, status, _ in results:
+                if status == "success":
+                    batch_success += 1
+                elif status == "matching_failed":
+                    batch_match_fail += 1
+                else:
+                    batch_ext_fail += 1
 
             logger.info(f"Finished Batch {batch_counter}. "
                         f"Stats: {batch_success} Success | "
@@ -238,6 +243,7 @@ def main():
     # Close the writer once all streaming is done
     if parquet_writer:
         parquet_writer.close()
+        logger.info("Parquet file successfully sealed and saved!")
 
     processing_end_time = time.time()
     processing_time = processing_end_time - processing_start_time
