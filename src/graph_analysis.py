@@ -131,51 +131,58 @@ def analyze_network(G: nx.Graph):
 def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     """
     Draws only the Top 4 largest communities.
-    Each community is assigned a distinct color and a legend is added.
+    Highlights the 'bridge' edges that connect authors from different communities.
     """
-    print("\nGenerating Visualization for Top 4 Communities...")
+    print("\nGenerating Visualization for Top 4 Communities with Bridges...")
 
     # 1. Count the communities and find the Top 4 largest ones
     community_counts = Counter(partition.values())
-
-    # .most_common(4) returns a list like: [(comm_id, count), (comm_id, count)...]
-    # We extract just the community IDs
     top_4_comms = [comm_id for comm_id, count in community_counts.most_common(4)]
 
     # 2. Extract ONLY the authors (nodes) that belong to these 4 communities
     top_nodes = [node for node, comm_id in partition.items() if comm_id in top_4_comms]
-
-    # Create a new graph that only contains these authors
     SubG = G.subgraph(top_nodes)
 
-    # 3. Assign a specific, strong color to each of the top 4 communities
-    # We use hex codes for Blue, Orange, Green, and Red
+    # 3. Assign a specific color to each of the top 4 communities
     color_mapping = {
         top_4_comms[0]: "#1f77b4",  # Blue
         top_4_comms[1]: "#ff7f0e",  # Orange
         top_4_comms[2]: "#2ca02c",  # Green
-        top_4_comms[3]: "#d62728"  # Red
+        top_4_comms[3]: "#d62728",  # Red
     }
-
-    # Look up the color for each node based on its community ID
     colors = [color_mapping[partition[node]] for node in SubG.nodes()]
 
     # 4. Calculate sizes based on degree (popularity)
     sizes = [min(degree_dict[node] * 20, 600) for node in SubG.nodes()]
 
     # 5. Physics simulation for layout
-    # Because we removed the background noise, the spring layout will naturally
-    # push these 4 distinct groups apart from each other, making them look great.
     pos = nx.spring_layout(SubG, k=0.15, seed=42)
+
+    # --- NEW: SEPARATE INTERNAL EDGES FROM BRIDGE EDGES ---
+    internal_edges = []
+    bridge_edges = []
+
+    # Look at every connection in our filtered graph
+    for author_a, author_b in SubG.edges():
+        # If they belong to the same community, it's an internal link
+        if partition[author_a] == partition[author_b]:
+            internal_edges.append((author_a, author_b))
+        # If they belong to different communities, it's a bridge!
+        else:
+            bridge_edges.append((author_a, author_b))
 
     # 6. Draw the plot
     plt.figure(figsize=(14, 14))
-    plt.title("Author Co-Affiliation Network (Top 4 Research Communities)", fontsize=18, fontweight='bold')
+    plt.title("Author Co-Affiliation Network (Top 4 Communities & Bridges)", fontsize=18, fontweight='bold')
 
-    # Draw the lines
-    nx.draw_networkx_edges(SubG, pos, alpha=0.15, edge_color="black")
+    # --- NEW: DRAW EDGES DIFFERENTLY ---
+    # Draw internal edges faintly (light gray, very transparent)
+    nx.draw_networkx_edges(SubG, pos, edgelist=internal_edges, alpha=0.10, edge_color="black")
 
-    # Draw the dots
+    # Draw bridge edges prominently (black, thicker, less transparent)
+    nx.draw_networkx_edges(SubG, pos, edgelist=bridge_edges, alpha=0.7, edge_color="black", width=1.5)
+
+    # Draw the dots (nodes)
     nx.draw_networkx_nodes(
         SubG, pos,
         node_color=colors,
@@ -185,27 +192,29 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
         linewidths=0.5
     )
 
-    # Label only the top 15 most connected authors inside this new filtered graph
+    # Label only the top 15 most connected authors
     top_labeled_nodes = sorted(dict(SubG.degree()).items(), key=lambda x: x[1], reverse=True)[:15]
     labels = {node: node for node, degree in top_labeled_nodes}
     nx.draw_networkx_labels(SubG, pos, labels=labels, font_size=9, font_weight="bold", font_color="black")
 
-    # 7. Add a Professional Legend
+    # 7. Add a Professional Legend (Including a marker for Bridges)
     legend_handles = [
-        mpatches.Patch(color="#1f77b4", label=f"Community 1 (Size: {community_counts[top_4_comms[0]]} Authors)"),
-        mpatches.Patch(color="#ff7f0e", label=f"Community 2 (Size: {community_counts[top_4_comms[1]]} Authors)"),
-        mpatches.Patch(color="#2ca02c", label=f"Community 3 (Size: {community_counts[top_4_comms[2]]} Authors)"),
-        mpatches.Patch(color="#d62728", label=f"Community 4 (Size: {community_counts[top_4_comms[3]]} Authors)")
+        mpatches.Patch(color="#1f77b4", label=f"Community 1 ({community_counts[top_4_comms[0]]} Authors)"),
+        mpatches.Patch(color="#ff7f0e", label=f"Community 2 ({community_counts[top_4_comms[1]]} Authors)"),
+        mpatches.Patch(color="#2ca02c", label=f"Community 3 ({community_counts[top_4_comms[2]]} Authors)"),
+        mpatches.Patch(color="#d62728", label=f"Community 4 ({community_counts[top_4_comms[3]]} Authors)"),
+        # Add a line to the legend explaining the black lines
+        plt.Line2D([0], [0], color='black', lw=1.5, alpha=0.7, label='Inter-Community Bridge')
     ]
-    plt.legend(handles=legend_handles, loc='upper left', title="Community Legend", title_fontsize='13', fontsize='11')
+    plt.legend(handles=legend_handles, loc='upper left', title="Network Legend", title_fontsize='13', fontsize='11')
 
     # Hide the axis and show the plot
     plt.axis("off")
     plt.tight_layout()
 
+    print(f"Found {len(internal_edges)} internal connections and {len(bridge_edges)} bridge connections.")
     print("Opening plot window. (Close the window to end the script).")
     plt.show()
-
 
 def main():
     # Set up your file paths (Ensure this matches the output of your pipeline)
