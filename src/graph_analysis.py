@@ -27,12 +27,12 @@ def load_and_build_graph(parquet_filename: str) -> nx.Graph:
     if not os.path.exists(parquet_filename):
         raise FileNotFoundError(f"Could not find {parquet_filename}. Make sure it is in the same folder.")
 
-    # 1. Load data and filter out failed matches
+    # Load data
     df = pl.read_parquet(parquet_filename)
+    # filter out failed matches
     df_matched = df.filter(pl.col("matched_info").is_not_null())
 
-    # 2. Build the Bipartite Mapping (Institution ROR ID -> Set of Author Names)
-    # This is much faster than comparing every author to every other author.
+    # Build the Bipartite Mapping (Institution ROR ID -> Set of Author Names)
     institution_to_authors = {}
 
     print("Decoding JSON and grouping authors by institution...")
@@ -56,10 +56,10 @@ def load_and_build_graph(parquet_filename: str) -> nx.Graph:
             print(f"Warning: Failed to parse a row: {e}")
             continue
 
-    # --- NEW CODE TO PRINT BUCKETS ---
+
     print("\n--- Sneak Peek at the 'Buckets' (Institutions -> Authors) ---")
 
-    # We use a counter to only print the first 5 buckets so we don't crash the terminal
+    #  print the first 5 buckets
     bucket_count = 0
     for inst_id, authors in institution_to_authors.items():
         if bucket_count >= 5:
@@ -73,7 +73,7 @@ def load_and_build_graph(parquet_filename: str) -> nx.Graph:
 
     print("Building the network graph edges...")
     G = nx.Graph()
-
+    # paring everyone in the bucket
     for inst_id, authors in institution_to_authors.items():
         # itertools.combinations creates pairs of every author in this institution
         for author_a, author_b in itertools.combinations(authors, 2):
@@ -104,18 +104,40 @@ def analyze_network(G: nx.Graph):
     for rank, (author, degree) in enumerate(top_degree, 1):
         print(f" {rank}. {author} (Degree: {degree})")
 
-    # 2. Betweenness Centrality (Who bridges different academic groups together?)
-    # Note: We calculate this only on the Giant Connected Component to save time.
-    gcc_nodes = max(nx.connected_components(G), key=len)
-    GCC = G.subgraph(gcc_nodes)
 
-    print("\nCalculating Betweenness Centrality (This might take a moment)...")
-    betweenness_dict = nx.betweenness_centrality(GCC, weight='weight')
+    # 2. Betweenness Centrality (Who bridges different academic groups together?)
+
+    # Sort ALL connected components by size, from largest to smallest
+    components = sorted(nx.connected_components(G), key=len, reverse=True)
+
+    # We will analyze up to the top 3 largest components
+    # (Using min() just in case the graph is so small it only has 1 or 2 components)
+    num_components_to_analyze = min(3, len(components))
+
+    betweenness_dict = {}
+
+    print(f"\nCalculating Betweenness Centrality for the Top {num_components_to_analyze} largest isolated networks...")
+
+    for i in range(num_components_to_analyze):
+        comp_nodes = components[i]
+        print(f"  -> Processing Component {i + 1} (Contains {len(comp_nodes)} authors)...")
+
+        # Create a subgraph for just this specific component
+        subgraph = G.subgraph(comp_nodes)
+
+        # Calculate betweenness just for this component
+        comp_betweenness = nx.betweenness_centrality(subgraph, weight='weight')
+
+        # Add these scores into our master dictionary
+        betweenness_dict.update(comp_betweenness)
+
+    # Sort the combined dictionary to find the top 10 bridges across ALL the top 3 components
     top_betweenness = sorted(betweenness_dict.items(), key=lambda x: x[1], reverse=True)[:10]
 
-    print("\nTop 10 'Bridge' Authors (Highest Betweenness Centrality):")
+    print("\nTop 10 'Bridge' Authors (Across Top Components):")
     for rank, (author, score) in enumerate(top_betweenness, 1):
         print(f" {rank}. {author} (Score: {score:.4f})")
+
 
     # 3. Community Detection (Finding distinct research cliques/groups)
     print("\nDetecting Academic Communities (Louvain Method)...")
@@ -147,7 +169,7 @@ def visualize_raw_graph(G: nx.Graph):
     sizes = [min(degrees[n] * 20 + 30, 400) for n in G.nodes()]
 
     # Draw edges
-    nx.draw_networkx_edges(G, pos, alpha=0.2, edge_color="black")
+    nx.draw_networkx_edges(G, pos, alpha=0.4, edge_color="black")
 
     # Draw nodes in a uniform color since we haven't calculated communities yet
     nx.draw_networkx_nodes(
@@ -162,7 +184,7 @@ def visualize_raw_graph(G: nx.Graph):
     plt.axis("off")
     plt.tight_layout()
 
-    print("Opening Raw Graph window. (*** YOU MUST CLOSE THIS WINDOW TO CONTINUE THE SCRIPT ***)")
+    print("Opening Raw Graph window.")
     plt.show()
 
 
@@ -175,15 +197,15 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     """
     print("\nGenerating Visualization for Top 4 Communities with Bridges...")
 
-    # 1. Count the communities and find the Top 4 largest ones
+    # Count the communities and find the Top 4 largest ones
     community_counts = Counter(partition.values())
     top_4_comms = [comm_id for comm_id, count in community_counts.most_common(4)]
 
-    # 2. Extract ONLY the authors (nodes) that belong to these 4 communities
+    # Extract ONLY the authors (nodes) that belong to these 4 communities
     top_nodes = [node for node, comm_id in partition.items() if comm_id in top_4_comms]
     SubG = G.subgraph(top_nodes)
 
-    # 3. Assign a specific color to each of the top 4 communities
+    # Assign a specific color to each of the top 4 communities
     color_mapping = {
         top_4_comms[0]: "#1f77b4",  # Blue
         top_4_comms[1]: "#ff7f0e",  # Orange
@@ -192,13 +214,13 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     }
     colors = [color_mapping[partition[node]] for node in SubG.nodes()]
 
-    # 4. Calculate sizes based on degree (popularity)
+    # Calculate sizes based on degree (popularity)
     sizes = [min(degree_dict[node] * 20, 600) for node in SubG.nodes()]
 
-    # 5. Physics simulation for layout
+    # Physics simulation for layout
     pos = nx.spring_layout(SubG, k=0.15, seed=42)
 
-    # --- NEW: SEPARATE INTERNAL EDGES FROM BRIDGE EDGES ---
+    # SEPARATE INTERNAL EDGES FROM BRIDGE EDGES
     internal_edges = []
     bridge_edges = []
 
@@ -215,11 +237,11 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     plt.figure(figsize=(14, 14))
     plt.title("Author Co-Affiliation Network (Top 4 Communities & Bridges)", fontsize=18, fontweight='bold')
 
-    # --- NEW: DRAW EDGES DIFFERENTLY ---
-    # Draw internal edges faintly (light gray, very transparent)
+
+    # Draw internal edges faintly
     nx.draw_networkx_edges(SubG, pos, edgelist=internal_edges, alpha=0.10, edge_color="black")
 
-    # Draw bridge edges prominently (black, thicker, less transparent)
+    # Draw bridge edges prominently
     nx.draw_networkx_edges(SubG, pos, edgelist=bridge_edges, alpha=0.7, edge_color="black", width=1.5)
 
     # Draw the dots (nodes)
@@ -237,7 +259,7 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     labels = {node: node for node, degree in top_labeled_nodes}
     nx.draw_networkx_labels(SubG, pos, labels=labels, font_size=9, font_weight="bold", font_color="black")
 
-    # 7. Add a Professional Legend (Including a marker for Bridges)
+    # Add a Professional Legend (Including a marker for Bridges)
     legend_handles = [
         mpatches.Patch(color="#1f77b4", label=f"Community 1 ({community_counts[top_4_comms[0]]} Authors)"),
         mpatches.Patch(color="#ff7f0e", label=f"Community 2 ({community_counts[top_4_comms[1]]} Authors)"),
@@ -255,10 +277,6 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     print(f"Found {len(internal_edges)} internal connections and {len(bridge_edges)} bridge connections.")
     print("Opening plot window. (Close the window to end the script).")
     plt.show()
-
-
-
-
 
 
 def main():
