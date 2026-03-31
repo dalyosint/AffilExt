@@ -128,6 +128,46 @@ def analyze_network(G: nx.Graph):
     return partition, degree_dict
 
 
+def visualize_raw_graph(G: nx.Graph):
+    """
+    Draws the complete, unfiltered graph immediately after it is built.
+    Includes all isolated nodes and disconnected pairs (No GCC filtering).
+    """
+    print(f"\nGenerating Visualization for the Raw Full Graph ({G.number_of_nodes()} Nodes)...")
+
+    plt.figure(figsize=(12, 12))
+    plt.title(f"Raw Author Co-Affiliation Network\n({G.number_of_nodes()} Nodes, {G.number_of_edges()} Edges)",
+              fontsize=16, fontweight='bold')
+
+    # Calculate layout for the entire graph
+    pos = nx.spring_layout(G, k=0.15, seed=42)
+
+    # Give nodes a basic size based on their connections so hubs still stand out slightly
+    degrees = dict(G.degree())
+    sizes = [min(degrees[n] * 20 + 30, 400) for n in G.nodes()]
+
+    # Draw edges
+    nx.draw_networkx_edges(G, pos, alpha=0.2, edge_color="black")
+
+    # Draw nodes in a uniform color since we haven't calculated communities yet
+    nx.draw_networkx_nodes(
+        G, pos,
+        node_color="#add8e6",  # Light blue
+        node_size=sizes,
+        alpha=0.9,
+        edgecolors="#00008b",  # Dark blue borders
+        linewidths=0.8
+    )
+
+    plt.axis("off")
+    plt.tight_layout()
+
+    print("Opening Raw Graph window. (*** YOU MUST CLOSE THIS WINDOW TO CONTINUE THE SCRIPT ***)")
+    plt.show()
+
+
+
+
 def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     """
     Draws only the Top 4 largest communities.
@@ -216,6 +256,11 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
     print("Opening plot window. (Close the window to end the script).")
     plt.show()
 
+
+
+
+
+
 def main():
     # Set up your file paths (Ensure this matches the output of your pipeline)
     INPUT_FILE = "math_sample_processed.parquet"
@@ -228,6 +273,8 @@ def main():
         if G.number_of_nodes() == 0:
             print("The graph has no nodes! Please check if your parquet file has valid 'matched_info' data.")
             return
+
+        visualize_raw_graph(G)
 
         # Step 2: Compute the math your professor asked for
         partition, degree_dict = analyze_network(G)
