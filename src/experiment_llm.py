@@ -31,12 +31,9 @@ PROMPT_BASE = """Extract the authors and affiliations from this LaTeX text and r
 """
 
 PROMPT_CONSTRAINED = """You are an academic data extraction AI.
-
 Extract authors and affiliations from a LaTeX preamble.
-
 Return JSON matching:
 {ExtractionResponse.model_json_schema()}
-
 Rules:
 - Extract only names and affiliations explicitly present.
 - Match authors to affiliations using the text.
@@ -52,10 +49,8 @@ Rules:
 """
 
 PROMPT_SUPER = r"""You are an expert academic data extraction AI.Extract authors and affiliations from a LaTeX preamble.
-
 Return JSON matching:
 {ExtractionResponse.model_json_schema()}
-
 Rules:
 - Extract only names and affiliations explicitly present.
 - Match authors to affiliations via markers in the text.
@@ -100,19 +95,19 @@ Output:
 """
 
 PROMPTS = {
-    "Base_Prompt": PROMPT_BASE,
-    "Constrained_Prompt": PROMPT_CONSTRAINED,
-    "Super_Prompt": PROMPT_SUPER
+    "Base_Prompt": PROMPT_BASE
+    #"Constrained_Prompt": PROMPT_CONSTRAINED,
+    #"Super_Prompt": PROMPT_SUPER
 }
 
 #  Experiment Settings
-MODELS = ["qwen2.5:0.5b", "gemma2:2b", "phi3:mini"]   #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
+MODELS = ["qwen2.5:0.5b"]  #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
 TEMPERATURES = [0.0]  #, 0.3, 0.7]
 
 def get_latex_preamble(text_content: str) -> str:
     r"""
     Captures everything from Line 1 down to \maketitle, \begin{abstract},
-    or the first \section. This safely accommodates Standard, KOMA, ACM,
+    or the first \secti on. This safely accommodates Standard, KOMA, ACM,
     IEEE, and AMS document classes.
     """
     # Look for the commands that officially start the "Body Text"
@@ -231,11 +226,15 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
         if best_score >= 80:
             matched_gt.add(best_idx)
             matched_pairs.append((i, best_idx))
+        else:
+            print("extracted authors and ground truth authors XYZ ")
+            print(extracted_authors)
+            print(ground_truth_authors)
 
     # The model prediction that was correct
     true_positives = len(matched_pairs)
 
-    # Precision / Recall (Authors)
+
     # Precision (The Anti-Hallucination Metric) (Correct Guesses) / (Total Guesses Made).
     precision = true_positives / len(extracted_authors)
     # Recall (The Anti-Forgetting Metric)  (Correct Guesses) / (Total Real Authors That Exist)
@@ -293,7 +292,7 @@ def evaluate_experiment(json_file):
 
 
 def main():
-    INPUT_FILE = "math_100.parquet"
+    INPUT_FILE = "math_only_sample_500.parquet"
     OUTPUT_JSONL = "ai_experiment_results.jsonl"
     OUTPUT_JSON = "ai_experiment_results_final.json"
 
@@ -315,7 +314,7 @@ def main():
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 100
+    TEST_LIMIT = 5
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")
@@ -338,6 +337,7 @@ def main():
                     "name": author.name,
                     "affiliations": []  # Hardcode to empty list since we know they don't exist
                 })
+
 
 
         # 1. Run Traditional Rule-Based
