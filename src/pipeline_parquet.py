@@ -83,7 +83,7 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
         meta_obj = parse_metadata(metadata_raw, paper_id)
         ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
-        # 1. ALWAYS run Traditional Extraction
+        #  Traditional Extraction
         logger.debug(f"[{paper_id}] Running Traditional Extraction...")
         ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
         if ext_info_trad:
@@ -93,7 +93,7 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
             logger.debug(f"[{paper_id}] Traditional extraction FAILED/EMPTY.")
 
 
-        # 2. ALWAYS run AI Extraction (The Experiment)
+        #  AI Extraction (The Experiment)
         logger.info(f"Running AI extraction for {paper_id}...")
         ext_info_ai = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
         if ext_info_ai:
@@ -102,7 +102,8 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
         else:
             logger.debug(f"[{paper_id}] AI extraction FAILED/EMPTY.")
 
-        # 3. Choose which one to use for ROR Matching
+        # Choose which one to use for ROR Matching
+
         ext_info_for_matching = ext_info_trad if ext_info_trad else ext_info_ai
 
         if ext_info_for_matching:
@@ -177,8 +178,6 @@ def main():
             # Convert PyArrow batch to Polars DataFrame, then to dicts
             df_batch = pl.from_arrow(batch)
             rows = df_batch.to_dicts()
-
-
 
 
             # Execute the batch in parallel
