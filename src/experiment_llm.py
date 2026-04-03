@@ -101,7 +101,7 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["qwen2.5:0.5b" "gemma2:2b", "qwen2.5:0.5b"]
+MODELS = ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
 TEMPERATURES = [0.0, 0.3, 0.7]
 
 def get_latex_metadata_windows(text_content: str) -> str:
@@ -262,7 +262,7 @@ def evaluate_experiment(json_file):
         df = pl.read_json(json_file, schema_overrides={"error_msg": pl.String})
 
         # Group by prompt_type and calculate our metrics
-        summary_df = df.group_by("model", "prompt_type").agg([
+        summary_df = df.group_by("model", "prompt_type", "temperature").agg([
             # 1. Average F1 Score
             pl.col("ai_author_f1").mean().round(4).alias("avg_f1"),
 
@@ -356,7 +356,7 @@ def main():
         rule_based_metrics = calculate_metrics_robust(rule_based_authors_output, ground_truth_authors)
 
 
-        preamble = get_latex_preamble(full_latex)
+        preamble = get_latex_metadata_windows(full_latex)
         # 2. Iterate Experiment Matrix
         for model in MODELS:
             for prompt_name, prompt_content in PROMPTS.items():
