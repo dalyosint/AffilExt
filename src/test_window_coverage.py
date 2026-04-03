@@ -3,26 +3,35 @@ import re
 import os
 
 
-def get_latex_metadata_window(text_content: str) -> str:
+def get_latex_metadata_windows(text_content: str) -> str:
     """
-    Captures everything from Line 1 down to \maketitle, \begin{abstract},
-    or the first \section / \chapter.
+    Captures the "Head" (preamble) and the "Tail" (end of document)
+    to catch authors at the top, and affiliations at the bottom.
     """
-    # 1. Look for the commands that officially start the "Body Text"
-    cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
-    match = re.search(cut_triggers, text_content, re.IGNORECASE)
+    # this function did cover 88%
+    cut_triggers = r'\\begin\{abstract\}|\\section\|\\abstract\{|\\chapter\{'
+    head_match = re.search(cut_triggers, text_content, re.IGNORECASE)
 
-    if match:
-        # 2. Cut the document right before the body text begins
-        target_text = text_content[:match.start()]
+    if head_match:
+        head_text = text_content[:head_match.start()]
+        if len(head_text) > 4000:
+            head_text = head_text[-4000:]  # Keep the bottom 4000 chars of the head
+    else:
+        head_text = text_content[:4000]
 
-        # 3. Limit to the BOTTOM 5000 characters of our cut.
-        if len(target_text) > 5000:
-            return target_text[-5000:]
-        return target_text
+    # Grab the last 3000 characters of the entire file.
+    # This safely catches \address{} blocks right before \end{document}
+    tail_text = text_content[-1000:]
 
-    # 4. Backup plan if none of the triggers are found
-    return text_content[:5000]
+
+    combined_text = (
+        "--- START OF DOCUMENT HEAD ---\n"
+        f"{head_text}\n\n"
+        "--- START OF DOCUMENT TAIL ---\n"
+        f"{tail_text}"
+    )
+
+    return combined_text
 
 
 def main():
@@ -49,7 +58,7 @@ def main():
             full_latex = row.get('text', '')
 
             # Run our scissors
-            windowed_text = get_latex_metadata_window(full_latex)
+            windowed_text = get_latex_metadata_windows(full_latex)
 
             # Write the output clearly to a Markdown file so it's easy to read
             f.write(f"## Paper ID: {paper_id}\n")

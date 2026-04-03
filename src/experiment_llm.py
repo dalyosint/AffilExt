@@ -95,40 +95,44 @@ Output:
 """
 
 PROMPTS = {
-    "Base_Prompt": PROMPT_BASE
-    #"Constrained_Prompt": PROMPT_CONSTRAINED,
-    #"Super_Prompt": PROMPT_SUPER
+    "Base_Prompt": PROMPT_BASE,
+    "Constrained_Prompt": PROMPT_CONSTRAINED,
+    "Super_Prompt": PROMPT_SUPER
 }
 
 #  Experiment Settings
-MODELS = ["qwen2.5:0.5b"]  #, "gemma2:2b", "qwen2.5:0.5b"]phi3:mini"
-TEMPERATURES = [0.0]  #, 0.3, 0.7]
+MODELS = ["qwen2.5:0.5b" "gemma2:2b", "qwen2.5:0.5b"]
+TEMPERATURES = [0.0, 0.3, 0.7]
 
-def get_latex_preamble(text_content: str) -> str:
-    r"""
-    Captures everything from Line 1 down to \maketitle, \begin{abstract},
-    or the first \secti on. This safely accommodates Standard, KOMA, ACM,
-    IEEE, and AMS document classes.
+def get_latex_metadata_windows(text_content: str) -> str:
     """
-    # Look for the commands that officially start the "Body Text"
-    # re.IGNORECASE just in case someone typed \MakeTitle
-    cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
-    match = re.search(cut_triggers, text_content, re.IGNORECASE)
+    Captures the "Head" (preamble) and the "Tail" (end of document)
+    to catch authors at the top, and affiliations at the bottom.
+    """
+    # this function did cover 88%
+    cut_triggers = r'\\begin\{abstract\}|\\section\|\\abstract\{|\\chapter\{'
+    head_match = re.search(cut_triggers, text_content, re.IGNORECASE)
 
-    if match:
-        # Cut the document right before the body text begins
-        target_text = text_content[:match.start()]
+    if head_match:
+        head_text = text_content[:head_match.start()]
+        if len(head_text) > 4000:
+            head_text = head_text[-4000:]  # Keep the bottom 4000 chars of the head
+    else:
+        head_text = text_content[:4000]
 
-        # Limit to the BOTTOM 5000 characters of our cut.
-        # This throws away the massive wall of \usepackage commands at the top,
-        # leaving the clean author/title metadata at the bottom for the AI.
-        if len(target_text) > 5000:
-            return target_text[-5000:]
-        return target_text
+    # Grab the last 3000 characters of the entire file.
+    # This safely catches \address{} blocks right before \end{document}
+    tail_text = text_content[-1000:]
 
-    #  Backup plan if none of the triggers are found
-    print(r"Warning: Could not find \maketitle, abstract, or section tags.")
-    return text_content[:5000]
+
+    combined_text = (
+        "--- START OF DOCUMENT HEAD ---\n"
+        f"{head_text}\n\n"
+        "--- START OF DOCUMENT TAIL ---\n"
+        f"{tail_text}"
+    )
+
+    return combined_text
 
 
 
@@ -184,62 +188,57 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp, 
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-
 def calculate_metrics_robust(extracted_authors, ground_truth_authors):
     """
-    Calculates Precision, Recall, and F1-score for both Authors and Affiliations.
-
+    Calculates Precision, Recall, and F1-score for Authors.
+    Uses an advanced max(ratio, token_set_ratio) approach to handle
+    flipped names (First Last vs Last, First) and middle initials.
     """
-
-    # paper  has 0 authors, and the AI extracted 0 authors, the AI did a perfect job
     if not extracted_authors and not ground_truth_authors:
         return {"precision": 1.0, "recall": 1.0, "f1_score": 1.0}
 
-    # paper has authors, but the AI extracted nothing, it completely failed
     if not extracted_authors:
         return {"precision": 0.0, "recall": 0.0, "f1_score": 0.0}
 
-    # Author extraction
-    # memory tracker ( against cheating )
     matched_gt = set()
-    # stores the successful matched
     matched_pairs = []
 
-    #  One-to-one matching
+    # --- STEP 1: One-to-one matching with Smarter Fuzzy Logic ---
     for i, ext_author in enumerate(extracted_authors):
         e_name = ext_author.get("name", "").lower().strip()
         best_idx = -1
         best_score = 0
 
-        # For every author the AI guessed, we compare it to every real author
         for j, gt_author in enumerate(ground_truth_authors):
             if j in matched_gt:
                 continue
 
             t_name = gt_author.get("name", "").lower().strip()
-            # author need strict matching
-            score = fuzz.ratio(e_name, t_name)
+
+            # 1. Standard Ratio (Checks exact character order & spelling)
+            exact_score = fuzz.ratio(e_name, t_name)
+
+            # 2. Token Set Ratio (Ignores word order, handles "Doe, John" vs "John Doe")
+            token_score = fuzz.token_set_ratio(e_name, t_name)
+
+            # Take the highest score of the two!
+            score = max(exact_score, token_score)
+
             if score > best_score:
                 best_score = score
                 best_idx = j
 
+        # If the best score is 80% or higher, we consider it a correct extraction
         if best_score >= 80:
             matched_gt.add(best_idx)
             matched_pairs.append((i, best_idx))
-        else:
-            print("extracted authors and ground truth authors XYZ ")
-            print(extracted_authors)
-            print(ground_truth_authors)
 
-    # The model prediction that was correct
     true_positives = len(matched_pairs)
 
-
-    # Precision (The Anti-Hallucination Metric) (Correct Guesses) / (Total Guesses Made).
+    # --- STEP 2: Precision / Recall (Authors) ---
     precision = true_positives / len(extracted_authors)
-    # Recall (The Anti-Forgetting Metric)  (Correct Guesses) / (Total Real Authors That Exist)
     recall = true_positives / len(ground_truth_authors) if ground_truth_authors else 0.0
-    # Harmonic Mean
+
     f1 = (2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0)
 
     return {
@@ -314,7 +313,7 @@ def main():
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 5
+    TEST_LIMIT = 100
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")
