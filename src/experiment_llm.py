@@ -101,9 +101,10 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
-TEMPERATURES = [0.0, 0.3, 0.7]
-
+MODELS = ["qwen2.5:0.5b"]
+# ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
+TEMPERATURES = [0.7]
+# [0.0, 0.3, 0.7]
 def get_latex_metadata_windows(text_content: str) -> str:
     """
     Captures the "Head" (preamble) and the "Tail" (end of document)
@@ -218,7 +219,7 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
             # 1. Standard Ratio (Checks exact character order & spelling)
             exact_score = fuzz.ratio(e_name, t_name)
 
-            # 2. Token Set Ratio (Ignores word order, handles "Doe, John" vs "John Doe")
+            # 2. Token Set Ratio
             token_score = fuzz.token_set_ratio(e_name, t_name)
 
             # Take the highest score of the two!
@@ -291,7 +292,7 @@ def evaluate_experiment(json_file):
 
 
 def main():
-    INPUT_FILE = "math_only_sample_500.parquet"
+    INPUT_FILE = ("math_100.parquet")
     OUTPUT_JSONL = "ai_experiment_results.jsonl"
     OUTPUT_JSON = "ai_experiment_results_final.json"
 
