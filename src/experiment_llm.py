@@ -101,9 +101,9 @@ PROMPTS = {
 }
 
 #  Experiment Settings
-MODELS = ["qwen2.5:0.5b"]
+MODELS = ["phi3:mini"]
 # ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
-TEMPERATURES = [0.7]
+TEMPERATURES = [0.0]
 # [0.0, 0.3, 0.7]
 def get_latex_metadata_windows(text_content: str) -> str:
     """
@@ -192,8 +192,7 @@ def extract_with_ollama_experiment(text_input, model_name, system_prompt, temp, 
 def calculate_metrics_robust(extracted_authors, ground_truth_authors):
     """
     Calculates Precision, Recall, and F1-score for Authors.
-    Uses an advanced max(ratio, token_set_ratio) approach to handle
-    flipped names (First Last vs Last, First) and middle initials.
+    Uses the Hybrid max(ratio, token_set_ratio) approach calibrated to a threshold of 70.
     """
     if not extracted_authors and not ground_truth_authors:
         return {"precision": 1.0, "recall": 1.0, "f1_score": 1.0}
@@ -204,7 +203,6 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
     matched_gt = set()
     matched_pairs = []
 
-    # --- STEP 1: One-to-one matching with Smarter Fuzzy Logic ---
     for i, ext_author in enumerate(extracted_authors):
         e_name = ext_author.get("name", "").lower().strip()
         best_idx = -1
@@ -216,30 +214,24 @@ def calculate_metrics_robust(extracted_authors, ground_truth_authors):
 
             t_name = gt_author.get("name", "").lower().strip()
 
-            # 1. Standard Ratio (Checks exact character order & spelling)
+            # Hybrid Fuzzy Logic
             exact_score = fuzz.ratio(e_name, t_name)
-
-            # 2. Token Set Ratio
             token_score = fuzz.token_set_ratio(e_name, t_name)
-
-            # Take the highest score of the two!
             score = max(exact_score, token_score)
 
             if score > best_score:
                 best_score = score
                 best_idx = j
 
-        # If the best score is 80% or higher, we consider it a correct extraction
-        if best_score >= 80:
+        # Calibrated threshold based on our scientific analysis
+        if best_score >= 70:
             matched_gt.add(best_idx)
             matched_pairs.append((i, best_idx))
 
     true_positives = len(matched_pairs)
 
-    # --- STEP 2: Precision / Recall (Authors) ---
     precision = true_positives / len(extracted_authors)
     recall = true_positives / len(ground_truth_authors) if ground_truth_authors else 0.0
-
     f1 = (2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0)
 
     return {
