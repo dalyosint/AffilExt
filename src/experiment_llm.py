@@ -95,14 +95,15 @@ Output:
 """
 
 PROMPTS = {
-    "Base_Prompt": PROMPT_BASE,
-    "Constrained_Prompt": PROMPT_CONSTRAINED,
-    "Super_Prompt": PROMPT_SUPER
+    #"Base_Prompt": PROMPT_BASE,
+    "Constrained_Prompt": PROMPT_CONSTRAINED
+    #"Super_Prompt": PROMPT_SUPER
 }
 
 #  Experiment Settings
-MODELS = ["phi3:mini"]
-# ["phi3:mini", "gemma2:2b", "qwen2.5:0.5b"]
+MODELS = ["qwen2.5:0.5b"]
+# ["phi3:mini ", "gemma2:2b", "qwen2.5:0.5b"]
+
 TEMPERATURES = [0.0]
 # [0.0, 0.3, 0.7]
 def get_latex_metadata_windows(text_content: str) -> str:
@@ -116,10 +117,10 @@ def get_latex_metadata_windows(text_content: str) -> str:
 
     if head_match:
         head_text = text_content[:head_match.start()]
-        if len(head_text) > 4000:
-            head_text = head_text[-4000:]  # Keep the bottom 4000 chars of the head
+        if len(head_text) > 5000:
+            head_text = head_text[-5000:]  # Keep the bottom 4000 chars of the head
     else:
-        head_text = text_content[:4000]
+        head_text = text_content[:5000]
 
     # Grab the last 3000 characters of the entire file.
     # This safely catches \address{} blocks right before \end{document}
@@ -143,7 +144,10 @@ def _call_ollama_api(model_name, messages, temp):
         model=model_name,
         messages=messages,
         format=ExtractionResponse.model_json_schema(),
-        options={"temperature": temp, "top_p": 0.1 if temp == 0.0 else 0.9}
+        options={"temperature": temp,
+                 "top_p": 0.1 if temp == 0.0 else 0.9,
+                 "num_ctx": 32768
+                 }
     )
 
 
@@ -284,7 +288,7 @@ def evaluate_experiment(json_file):
 
 
 def main():
-    INPUT_FILE = ("math_100.parquet")
+    INPUT_FILE = ("math_500.parquet")
     OUTPUT_JSONL = "ai_experiment_results.jsonl"
     OUTPUT_JSON = "ai_experiment_results_final.json"
 
@@ -306,7 +310,7 @@ def main():
     df = pl.read_parquet(INPUT_FILE)
     rows = df.to_dicts()
 
-    TEST_LIMIT = 100
+    TEST_LIMIT = 500
     test_rows = rows[:TEST_LIMIT]
     logger.info(
         f"Starting experiment on {len(test_rows)} papers. Total configurations per paper: {len(MODELS) * len(PROMPTS) * len(TEMPERATURES)}")

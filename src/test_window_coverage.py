@@ -14,10 +14,10 @@ def get_latex_metadata_windows(text_content: str) -> str:
 
     if head_match:
         head_text = text_content[:head_match.start()]
-        if len(head_text) > 4000:
-            head_text = head_text[-4000:]  # Keep the bottom 4000 chars of the head
+        if len(head_text) > 5000:
+            head_text = head_text[-5000:]  # Keep the bottom 4000 chars of the head
     else:
-        head_text = text_content[:4000]
+        head_text = text_content[:5000]
 
     # Grab the last 3000 characters of the entire file.
     # This safely catches \address{} blocks right before \end{document}
