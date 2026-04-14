@@ -9,7 +9,7 @@ def main():
     # ---------------------------------------------------------
 
     # Load the 3 JSON files (Raw data from the AI)
-    json_files = ['PhinT0.json', 'PhinT3.json', 'PhinT7.json']
+    json_files = ['phinT0.json', 'phinT3.json', 'phinT7.json']
     raw_data = [ ]
     for file in json_files:
         try:
@@ -91,7 +91,7 @@ def main():
             )
         ],
         barmode='group',
-        title="Qwen2.5:0.5b Ablation Study Results",
+        title=" Phi3 Ablation Study Results",
         xaxis_title="Temperature",
         yaxis_title="Average F1 Score",
         legend_title="Prompt Type",

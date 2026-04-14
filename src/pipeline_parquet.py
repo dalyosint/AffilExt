@@ -135,7 +135,7 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
 
 def main():
 
-    INPUT_FILE = "math_only_sample_500.parquet"
+    INPUT_FILE = "math_100.parquet"
     OUTPUT_FILE = "math_sample_processed.parquet"
 
     # start time
