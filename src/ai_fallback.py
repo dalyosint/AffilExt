@@ -25,12 +25,9 @@ class ExtractionResponse(BaseModel):
 
 # The winning prompt from your experiments
 PROMPT_CONSTRAINED = """You are an academic data extraction AI.
-
 Extract authors and affiliations from a LaTeX preamble.
-
 Return JSON matching:
-{json_schema}
-
+{ExtractionResponse.model_json_schema()}
 Rules:
 - Extract only names and affiliations explicitly present.
 - Match authors to affiliations using the text.
@@ -46,27 +43,33 @@ Rules:
 """
 
 
-def get_latex_preamble(text_content: str) -> str:
-    r"""
-    Captures everything from Line 1 down to \maketitle, \begin{abstract},
-    or the first \section. Safely accommodates Standard, KOMA, ACM,
-    IEEE, and AMS document classes.
+def get_latex_metadata_windows(text_content: str) -> str:
     """
-    cut_triggers = r'\\maketitle|\\begin\{abstract\}|\\section\{|\\chapter\{'
-    match = re.search(cut_triggers, text_content, re.IGNORECASE)
+    Captures the "Head" (preamble) and the "Tail" (end of document)
+    to catch authors at the top, and affiliations at the bottom.
+    """
+    cut_triggers = r'\\begin\{abstract\}|\\section\|\\abstract\{|\\chapter\{'
+    head_match = re.search(cut_triggers, text_content, re.IGNORECASE)
 
-    if match:
-        target_text = text_content[:match.start()]
+    if head_match:
+        head_text = text_content[:head_match.start()]
+        if len(head_text) > 5000:
+            head_text = head_text[-5000:]  # Keep the bottom 5000 chars of the head
+    else:
+        head_text = text_content[:5000]
 
-        # Limit to the BOTTOM 5000 characters of our cut
-        # This throws away the massive wall of \usepackage commands at the top
-        if len(target_text) > 3000:
-            return target_text[-3000:]
-        return target_text
+    # Grab the last 1000 characters of the entire file.
+    # This safely catches \address{} blocks right before \end{document}
+    tail_text = text_content[-1000:]
 
-    _logger.warning(r"Warning: Could not find \maketitle, abstract, or section tags.")
-    return text_content[:3000]
+    combined_text = (
+        "--- START OF DOCUMENT HEAD ---\n"
+        f"{head_text}\n\n"
+        "--- START OF DOCUMENT TAIL ---\n"
+        f"{tail_text}"
+    )
 
+    return combined_text
 
 def _call_ollama_api_worker(model_name, messages, temp, result_queue):
     """The raw API call wrapped for a daemon thread."""
@@ -83,19 +86,17 @@ def _call_ollama_api_worker(model_name, messages, temp, result_queue):
         # Put the error in the queue if it fails
         result_queue.put(("error", e))
 
-def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "gemma2:2b",
-                        timeout_seconds=30) -> ExtAuthorInfo:
+def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qwen2.5:0.5b",
+                        timeout_seconds=20) -> ExtAuthorInfo:
     """
     Sends text to Ollama and enforces a structured JSON response.
     Includes a strict timeout executor from the experiment benchmarks.
     """
     _logger.info(f"AI Fallback extraction using Ollama for {arxiv_metadata.arxiv_id}")
 
-    text_input = get_latex_preamble(text_content)
+    text_input = get_latex_metadata_windows(text_content)
     schema_str = ExtractionResponse.model_json_schema()
-    formatted_system_prompt = PROMPT_CONSTRAINED.replace("{json_schema}", str(schema_str)).replace("{text_input}",
-                                                                                                   text_input)
-
+    formatted_system_prompt = PROMPT_CONSTRAINED.replace("{text_input}",text_input)
     messages = [{'role': 'system', 'content': formatted_system_prompt}]
     temp = 0.0
 
@@ -122,6 +123,7 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "ge
 
         # Validate response
         parsed_data = ExtractionResponse.model_validate_json(json_content)
+        print(f"✅ AI Output Parsed: {parsed_data}\n")
 
         authors = [AIExtAuthor(name=a.name, affiliations=a.affiliations) for a in parsed_data.authors]
 

@@ -4,7 +4,8 @@ from pathlib import Path
 # Used to convert Python objects → string
 import jsonpickle
 import ai_fallback
-
+import os
+import glob
 # new approach
 import polars as pl
 import pyarrow.parquet as pq
@@ -84,14 +85,15 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
         ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
         #  Traditional Extraction
-        logger.debug(f"[{paper_id}] Running Traditional Extraction...")
-        ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
-        if ext_info_trad:
-            extracted_result = jsonpickle.encode(ext_info_trad)
-            logger.debug(f"[{paper_id}] Traditional extraction SUCCESS.")
-        else:
-            logger.debug(f"[{paper_id}] Traditional extraction FAILED/EMPTY.")
+        # ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
+        # if ext_info_trad:
+          #  extracted_result = jsonpickle.encode(ext_info_trad)
+           # logger.debug(f"[{paper_id}] Traditional extraction SUCCESS.")
+        #else:
+         #   logger.debug(f"[{paper_id}] Traditional extraction FAILED/EMPTY.")
 
+        ext_info_trad = None
+        extracted_result = None
 
         #  AI Extraction (The Experiment)
         logger.info(f"Running AI extraction for {paper_id}...")
@@ -134,12 +136,31 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
 
 
 def main():
-
-    INPUT_FILE = "math_100.parquet"
-    OUTPUT_FILE = "math_sample_processed.parquet"
+    INPUT_FILE = "math_500.parquet"
+    OUTPUT_DIR = "processed_batches"  #  We use a directory now instead of a single file
+    FINAL_OUTPUT_FILE = "math_sample_processed_final.parquet"
 
     # start time
     total_start_time = time.time()
+
+    # --- 1. CRASH RESILIENCE: Create directory and load processed IDs ---
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    processed_ids = set()
+
+    # Look for any existing batch files in the folder to resume from
+    existing_files = glob.glob(os.path.join(OUTPUT_DIR, "*.parquet"))
+    if existing_files:
+        logger.info(f"Found {len(existing_files)} existing batch files. Loading to resume...")
+        # We only read the 'id' column to save RAM!
+        for file in existing_files:
+            try:
+                existing_df = pl.read_parquet(file, columns=["id"])
+                processed_ids.update(existing_df["id"].to_list())
+            except Exception as e:
+                logger.warning(f"Could not read {file}, it might be corrupted from a previous crash: {e}")
+
+        logger.info(f"Resuming pipeline. Found {len(processed_ids)} already completed papers.")
+    # --------------------------------------------------------------------
 
     logger.info("Step 1: Loading ROR Dataset...")
     ror_dataset = match_data._get_ror_dataset()
@@ -148,14 +169,11 @@ def main():
 
     logger.info(f"Step 2: Preparing to stream Input Parquet {INPUT_FILE}...")
 
-
-    # Create a partial function with the ROR data permanently attached to it
     worker_func = partial(process_single_paper, ror_orgs=ror_orgs, ror_orgs_dict=ror_orgs_dict)
 
     MAX_CORES = 2
     BATCH_SIZE = 50
 
-    # Diagnostics tracking
     success_count = 0
     extraction_failed_count = 0
     matching_failed_count = 0
@@ -164,27 +182,34 @@ def main():
     logger.info("Step 3: Processing papers in streams with Multiprocessing...")
     processing_start_time = time.time()
 
-    # Open the large parquet file for streaming reads
     parquet_file = pq.ParquetFile(INPUT_FILE)
-    parquet_writer = None
-
     batch_counter = 1
-    # ProcessPoolExecutor keeps the cores busy
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_CORES) as executor:
 
-        # iter_batches() streams the file in chunks without loading everything into memory
         for batch in parquet_file.iter_batches(batch_size=BATCH_SIZE):
-            logger.info(f"--- Starting Batch {batch_counter} ({BATCH_SIZE} rows) ---")
-            # Convert PyArrow batch to Polars DataFrame, then to dicts
             df_batch = pl.from_arrow(batch)
+
+            # --- 2. FILTER: Skip papers we already processed ---
+            if processed_ids:
+                df_batch = df_batch.filter(~pl.col("id").is_in(list(processed_ids)))
+
+            if df_batch.height == 0:
+                logger.info(f"--- Skipping Batch {batch_counter} (All rows already processed) ---")
+                batch_counter += 1
+                continue
+            # ---------------------------------------------------
+
+            logger.info(f"--- Starting Batch {batch_counter} ({df_batch.height} new rows) ---")
             rows = df_batch.to_dicts()
 
-
             # Execute the batch in parallel
-            # While one row waits for AI, another core picks up the next row for extraction
             results = list(executor.map(worker_func, rows, chunksize=5))
 
-            # Prepare columns for the results
+            # Add these new IDs to our set so we don't process them again if we read the file twice
+            for r in rows:
+                processed_ids.add(r['id'])
+
             extracted_results_column = []
             matched_results_column = []
             ai_results_column = []
@@ -192,7 +217,7 @@ def main():
             batch_success = 0
             batch_match_fail = 0
             batch_ext_fail = 0
-            # Unpack the results
+
             for ext_res, match_res, ai_res, status, duration in results:
                 extracted_results_column.append(ext_res)
                 matched_results_column.append(match_res)
@@ -200,37 +225,27 @@ def main():
                 paper_processing_times.append(duration)
 
                 if status == "success":
+                    batch_success += 1
                     success_count += 1
                 elif status == "matching_failed":
+                    batch_match_fail += 1
                     matching_failed_count += 1
                 else:
+                    batch_ext_fail += 1
                     extraction_failed_count += 1
 
-            # Append the new results as columns to the current batch
             df_batch = df_batch.with_columns([
                 pl.Series("extracted_info", extracted_results_column),
                 pl.Series("matched_info", matched_results_column),
                 pl.Series("ai_output", ai_results_column)
             ])
 
-            # Convert back to PyArrow table for writing
-            result_table = df_batch.to_arrow()
-
-            # Write the batch directly to the output Parquet file
-            if parquet_writer is None:
-                # Initialize the writer with the schema of the first fully processed batch
-                parquet_writer = pq.ParquetWriter(OUTPUT_FILE, result_table.schema)
-
-            parquet_writer.write_table(result_table)
-            logger.info(f"Successfully processed and wrote a batch of {len(rows)} rows.")
-
-            for _, _, _, status, _ in results:
-                if status == "success":
-                    batch_success += 1
-                elif status == "matching_failed":
-                    batch_match_fail += 1
-                else:
-                    batch_ext_fail += 1
+            # --- 3. SAVE CHECKPOINT: Write just this batch to disk safely ---
+            # We add a timestamp to the filename to avoid accidental overwrites
+            batch_filename = os.path.join(OUTPUT_DIR, f"batch_{batch_counter}_{int(time.time())}.parquet")
+            df_batch.write_parquet(batch_filename)
+            logger.info(f"Saved checkpoint: {batch_filename}")
+            # ----------------------------------------------------------------
 
             logger.info(f"Finished Batch {batch_counter}. "
                         f"Stats: {batch_success} Success | "
@@ -238,25 +253,24 @@ def main():
                         f"{batch_ext_fail} Ext Fail")
             batch_counter += 1
 
-
-    # Close the writer once all streaming is done
-    if parquet_writer:
-        parquet_writer.close()
-        logger.info("Parquet file successfully sealed and saved!")
-
     processing_end_time = time.time()
-    processing_time = processing_end_time - processing_start_time
+    logger.info(f"Processing time: {(processing_end_time - processing_start_time) / 60:.2f} minutes")
 
-    logger.info(f"Processing time: {processing_time:.2f} seconds")
-    logger.info(f"Processing time: {processing_time / 60:.2f} minutes")
+    # --- 4. OPTIONAL: Compile all the little batches into one final file at the end ---
+    logger.info("Compiling all batch files into final output...")
+    try:
+        # Polars can read a whole folder of Parquet files at once!
+        final_df = pl.scan_parquet(os.path.join(OUTPUT_DIR, "*.parquet")).collect()
+        final_df.write_parquet(FINAL_OUTPUT_FILE)
+        logger.info(f"Success! Final compiled output saved to {FINAL_OUTPUT_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to compile final file: {e}. Don't worry, your data is safe in the '{OUTPUT_DIR}' folder.")
+    # ----------------------------------------------------------------------------------
 
-    logger.info(f"Success! Final streamed output saved to {OUTPUT_FILE}")
-
-    total_end_time = time.time()
-    total_time = total_end_time - total_start_time
+    total_time = time.time() - total_start_time
     logger.info(f"Total pipeline time: {total_time:.2f} seconds")
-
 
 
 if __name__ == "__main__":
     main()
+

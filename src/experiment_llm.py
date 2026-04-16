@@ -145,8 +145,7 @@ def _call_ollama_api(model_name, messages, temp):
         messages=messages,
         format=ExtractionResponse.model_json_schema(),
         options={"temperature": temp,
-                 "top_p": 0.1 if temp == 0.0 else 0.9,
-                 "num_ctx": 32768
+                 "top_p": 0.1 if temp == 0.0 else 0.9
                  }
     )
 
