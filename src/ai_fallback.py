@@ -7,6 +7,8 @@ from typing import List
 import threading
 import queue
 
+import asyncio
+from ollama import AsyncClient
 from definition.data.Author import Author as AIExtAuthor
 from definition.data.ExtAuthorData import ExtAuthorInfo, ExtResults
 
@@ -71,59 +73,33 @@ def get_latex_metadata_windows(text_content: str) -> str:
 
     return combined_text
 
-def _call_ollama_api_worker(model_name, messages, temp, result_queue):
-    """The raw API call wrapped for a daemon thread."""
-    try:
-        response = ollama.chat(
+
+
+def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qwen2.5:0.5b",
+                        timeout_seconds=20) -> ExtAuthorInfo:
+    _logger.info(f"AI Fallback extraction using Ollama for {arxiv_metadata.arxiv_id}")
+
+    text_input = get_latex_metadata_windows(text_content)
+    formatted_system_prompt = PROMPT_CONSTRAINED.replace("{text_input}", text_input)
+    messages = [{'role': 'system', 'content': formatted_system_prompt}]
+    temp = 0.0
+
+    # Define the async call inside the function
+    async def run_ollama():
+        client = AsyncClient()
+        return await client.chat(
             model=model_name,
             messages=messages,
             format=ExtractionResponse.model_json_schema(),
             options={"temperature": temp, "top_p": 0.1 if temp == 0.0 else 0.9}
         )
-        # Put successful response in the queue
-        result_queue.put(("success", response))
-    except Exception as e:
-        # Put the error in the queue if it fails
-        result_queue.put(("error", e))
-
-def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qwen2.5:0.5b",
-                        timeout_seconds=20) -> ExtAuthorInfo:
-    """
-    Sends text to Ollama and enforces a structured JSON response.
-    Includes a strict timeout executor from the experiment benchmarks.
-    """
-    _logger.info(f"AI Fallback extraction using Ollama for {arxiv_metadata.arxiv_id}")
-
-    text_input = get_latex_metadata_windows(text_content)
-    schema_str = ExtractionResponse.model_json_schema()
-    formatted_system_prompt = PROMPT_CONSTRAINED.replace("{text_input}",text_input)
-    messages = [{'role': 'system', 'content': formatted_system_prompt}]
-    temp = 0.0
-
-    # 1. Create a queue to get the data out of the thread
-    result_queue = queue.Queue()
-
-    # 2. Spin up a DAEMON thread (daemon=True is the magic fix that prevents hangs)
-    t = threading.Thread(
-        target=_call_ollama_api_worker,
-        args=(model_name, messages, temp, result_queue),
-        daemon=True
-    )
-    t.start()
 
     try:
-        # Wait for the result, kill if it exceeds timeout.
-        # If timeout hits, queue.Empty is raised.
-        status, response = result_queue.get(timeout=timeout_seconds)
-
-        if status == "error":
-            raise response  # Re-raise whatever error happened inside the thread
+        # Run it synchronously with a strict, leak-proof timeout
+        response = asyncio.run(asyncio.wait_for(run_ollama(), timeout=timeout_seconds))
 
         json_content = response['message']['content']
-
-        # Validate response
         parsed_data = ExtractionResponse.model_validate_json(json_content)
-        print(f"✅ AI Output Parsed: {parsed_data}\n")
 
         authors = [AIExtAuthor(name=a.name, affiliations=a.affiliations) for a in parsed_data.authors]
 
@@ -131,8 +107,7 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qw
             ext_results = [ExtResults(scheme_name="Ollama_AI_Fallback_Constrained", authors=authors, score=1.0)]
             return ExtAuthorInfo(ext_type="ai_fallback", extractions=ext_results)
 
-    except queue.Empty:
-        # This catches the timeout. The daemon thread is left behind to die automatically.
+    except asyncio.TimeoutError:
         _logger.error(
             f"🚨 BOOM! TIMEOUT: Model {model_name} took over {timeout_seconds}s for {arxiv_metadata.arxiv_id}. Skipping.")
     except ValidationError as ve:

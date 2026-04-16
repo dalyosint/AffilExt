@@ -63,8 +63,19 @@ def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata:
         logger.warning(f"Metadata parsing issue for {arxiv_id}: {e}")
         return None
 
+global_ror_orgs = None
+global_ror_orgs_dict = None
 
-def process_single_paper(row, ror_orgs, ror_orgs_dict):
+def init_worker():
+    """This runs once per CPU core to load the dataset exactly once per process."""
+    global global_ror_orgs, global_ror_orgs_dict
+    import match_data
+    ror_dataset = match_data._get_ror_dataset()
+    global_ror_orgs = match_data._process_ror_orgs(ror_dataset)
+    global_ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
+
+
+def process_single_paper(row):
     """Handles the processing for a single row to be run in a separate process."""
     paper_start_time = time.perf_counter()
     paper_id = row.get('id', 'Unknown')
@@ -110,7 +121,7 @@ def process_single_paper(row, ror_orgs, ror_orgs_dict):
 
         if ext_info_for_matching:
             final_data = match_data.match_and_resolve_single_paper(
-                meta_obj, ext_info_for_matching, ror_orgs, ror_orgs_dict
+                meta_obj, ext_info_for_matching, global_ror_orgs, global_ror_orgs_dict
             )
 
             if final_data:
@@ -185,7 +196,7 @@ def main():
     parquet_file = pq.ParquetFile(INPUT_FILE)
     batch_counter = 1
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_CORES) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_CORES, initializer=init_worker ) as executor:
 
         for batch in parquet_file.iter_batches(batch_size=BATCH_SIZE):
             df_batch = pl.from_arrow(batch)
@@ -204,8 +215,8 @@ def main():
             rows = df_batch.to_dicts()
 
             # Execute the batch in parallel
-            results = list(executor.map(worker_func, rows, chunksize=5))
 
+            results = list(executor.map(process_single_paper, rows, chunksize=5))
             # Add these new IDs to our set so we don't process them again if we read the file twice
             for r in rows:
                 processed_ids.add(r['id'])
@@ -259,10 +270,10 @@ def main():
     # --- 4. OPTIONAL: Compile all the little batches into one final file at the end ---
     logger.info("Compiling all batch files into final output...")
     try:
-        # Polars can read a whole folder of Parquet files at once!
-        final_df = pl.scan_parquet(os.path.join(OUTPUT_DIR, "*.parquet")).collect()
-        final_df.write_parquet(FINAL_OUTPUT_FILE)
-        logger.info(f"Success! Final compiled output saved to {FINAL_OUTPUT_FILE}")
+         # sink_parquet streams the data chunk-by-chunk directly to the hard drive without filling RAM
+         pl.scan_parquet(os.path.join(OUTPUT_DIR, "*.parquet")).sink_parquet(FINAL_OUTPUT_FILE)
+         logger.info(f"Success! Final compiled output saved to {FINAL_OUTPUT_FILE}")
+
     except Exception as e:
         logger.error(f"Failed to compile final file: {e}. Don't worry, your data is safe in the '{OUTPUT_DIR}' folder.")
     # ----------------------------------------------------------------------------------
