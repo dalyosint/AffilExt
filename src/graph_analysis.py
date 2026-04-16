@@ -281,7 +281,7 @@ def visualize_graph(G: nx.Graph, partition: dict, degree_dict: dict):
 
 def main():
     # Set up your file paths (Ensure this matches the output of your pipeline)
-    INPUT_FILE = "math_sample_processed.parquet"
+    INPUT_FILE = "math_sample_processed_final.parquet"
 
     try:
         # Step 1: Build the raw graph
