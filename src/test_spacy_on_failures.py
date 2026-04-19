@@ -1,11 +1,20 @@
 import pandas as pd
 import json
-from approach1_spacy_ner import extract_org_name_with_spacy
+
+# Import your matching tools
+from approach1_spacy_ner import extract_org_name_with_spacy, get_matched_affiliation_spacy
+import match_data
+
+print("Loading ROR dataset for fuzzy matching...")
+# Load ROR dataset and prepare it using the existing functions in match_data.py
+ror_dataset = match_data._get_ror_dataset()
+ror_orgs = match_data._process_ror_orgs(ror_dataset)
+ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
 
 # Load the parquet file
 df = pd.read_parquet('first_100_failed_matches.parquet')
 
-print(f"Loaded {len(df)} failed matches. Testing spaCy NER cleaning...\n")
+print(f"Loaded {len(df)} failed matches. Testing spaCy NER + RapidFuzz...\n")
 print("-" * 80)
 
 count = 0
@@ -30,11 +39,23 @@ for index, row in df.iterrows():
                 if not raw_string:
                     continue
 
-                # Run Approach 1!
+                # Get the cleaned string just to display it
                 cleaned_string = extract_org_name_with_spacy(raw_string)
 
-                print(f"FAILED RAW: {raw_string}")
-                print(f"CLEANED:    {cleaned_string}")
+                # Run the full pipeline: NER cleaning -> RapidFuzz matching
+                # Returns: (original_affiliation, (best_ror_id, score))
+                _, (ror_id, score) = get_matched_affiliation_spacy(raw_string, ror_orgs)
+
+                # Look up the matched ROR organization's actual name to display
+                if ror_id in ror_orgs_dict and ror_orgs_dict[ror_id].names:
+                    matched_org_name = ror_orgs_dict[ror_id].names[0]
+                else:
+                    matched_org_name = "Unknown"
+
+                print(f"FAILED RAW:   {raw_string}")
+                print(f"CLEANED:      {cleaned_string}")
+                print(f"FUZZY MATCH:  {matched_org_name} (ROR ID: {ror_id})")
+                print(f"MATCH SCORE:  {score:.2f}")
                 print("-" * 80)
 
                 count += 1
@@ -49,4 +70,3 @@ for index, row in df.iterrows():
         break
 
 print("\n[Evaluation Complete]")
-print("Look at the CLEANED strings. Did spaCy successfully remove the street addresses and junk?")
