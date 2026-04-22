@@ -59,7 +59,7 @@ for index, row in df.iterrows():
                 print("-" * 80)
 
                 count += 1
-                if count >= 20:  # Limit to 20 for readability
+                if count >= 50:  # Limit to 20 for readability
                     break
             if count >= 20:
                 break
