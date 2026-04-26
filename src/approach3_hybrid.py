@@ -14,3 +14,9 @@ def get_matched_affiliation_hybrid(
     _, (ror_id, score) = get_matched_affiliation_sbert(cleaned_affiliation, research_orgs)
 
     return affiliation, (ror_id, score)
+
+    # Add a threshold check
+    if score < 75.0:  # Adjust this threshold as needed
+        return affiliation, (None, score)
+
+    return affiliation, (ror_id, score)
