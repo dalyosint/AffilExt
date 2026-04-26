@@ -9,7 +9,7 @@ def main():
     # ---------------------------------------------------------
 
     # Load the 3 JSON files (Raw data from the AI)
-    json_files = ['phinT0.json', 'phinT3.json', 'phinT7.json']
+    json_files = ['QwenT0.json', 'QwenT3.json', 'QwenT7.json']
     raw_data = [ ]
     for file in json_files:
         try:
@@ -21,7 +21,7 @@ def main():
     print(f"✅ Loaded {len(raw_data)} raw extraction records from JSON files.")
 
     # Load the 3 CSV files (Aggregated Benchmarks for the graph)
-    csv_files = ['phinT0.csv', 'phinT3.csv', 'phinT7.csv']
+    csv_files = ['QwenT0.csv', 'QwenT3.csv', 'QwenT7.csv']
     dfs = []
     for file in csv_files:
         try:

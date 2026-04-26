@@ -1,1 +1,2 @@
 ror_embeddings_cache.npz
+*.parquet

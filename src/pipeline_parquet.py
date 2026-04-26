@@ -95,46 +95,57 @@ def process_single_paper(row):
         meta_obj = parse_metadata(metadata_raw, paper_id)
         ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
-        #  Traditional Extraction
-        # ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
-        # if ext_info_trad:
-          #  extracted_result = jsonpickle.encode(ext_info_trad)
-           # logger.debug(f"[{paper_id}] Traditional extraction SUCCESS.")
-        #else:
-         #   logger.debug(f"[{paper_id}] Traditional extraction FAILED/EMPTY.")
+        # --- 1. Try Rule-Based (Traditional) Extraction First ---
+        ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
 
-        ext_info_trad = None
-        extracted_result = None
+        if ext_info_trad:
+            logger.debug(f"[{paper_id}] Traditional extraction SUCCESS.")
+            extracted_result = jsonpickle.encode(ext_info_trad)
 
-        #  AI Extraction (The Experiment)
-        logger.info(f"Running AI extraction for {paper_id}...")
-        ext_info_ai = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
-        if ext_info_ai:
-            ai_result = jsonpickle.encode(ext_info_ai)
-            logger.debug(f"[{paper_id}] AI extraction SUCCESS.")
-        else:
-            logger.debug(f"[{paper_id}] AI extraction FAILED/EMPTY.")
-
-        # Choose which one to use for ROR Matching
-
-        ext_info_for_matching = ext_info_trad if ext_info_trad else ext_info_ai
-
-        if ext_info_for_matching:
+            # Attempt to match the traditional extraction
             final_data = match_data.match_and_resolve_single_paper(
-                meta_obj, ext_info_for_matching, global_ror_orgs, global_ror_orgs_dict
+                meta_obj, ext_info_trad, global_ror_orgs, global_ror_orgs_dict
             )
 
             if final_data:
-                logger.debug(f"[{paper_id}] Running ROR Matching...")
                 matched_result = jsonpickle.encode(final_data)
                 status = "success"
-                logger.debug(f"[{paper_id}] Match SUCCESS.")
+                logger.debug(f"[{paper_id}] Traditional Match SUCCESS.")
             else:
                 status = "matching_failed"
-                logger.debug(f"[{paper_id}] Match FAILED .")
+                logger.debug(f"[{paper_id}] Traditional Match FAILED.")
+        else:
+            logger.debug(f"[{paper_id}] Traditional extraction FAILED/EMPTY.")
+            status = "extraction_failed"
+
+        # --- 2. AI Fallback (Only if extraction or matching failed) ---
+        if status in ["extraction_failed", "matching_failed"]:
+            logger.info(f"Rule-based failed for {paper_id}. Falling back to AI extraction...")
+            ext_info_ai = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
+
+            if ext_info_ai:
+                ai_result = jsonpickle.encode(ext_info_ai)
+                extracted_result = ai_result  # Overwrite with AI's extraction payload
+                logger.debug(f"[{paper_id}] AI extraction SUCCESS.")
+
+                # Attempt to match the AI extraction
+                final_data = match_data.match_and_resolve_single_paper(
+                    meta_obj, ext_info_ai, global_ror_orgs, global_ror_orgs_dict
+                )
+
+                if final_data:
+                    matched_result = jsonpickle.encode(final_data)
+                    status = "success"
+                    logger.debug(f"[{paper_id}] AI Match SUCCESS.")
+                else:
+                    status = "matching_failed"
+                    logger.debug(f"[{paper_id}] AI Match FAILED.")
+            else:
+                logger.debug(f"[{paper_id}] AI extraction FAILED/EMPTY.")
+                status = "extraction_failed"
 
     except Exception as e:
-        logger.error(f"[{paper_id}] Failed processing paper: {e}", exc_info=True )
+        logger.error(f"[{paper_id}] Failed processing paper: {e}", exc_info=True)
         status = "pipeline_error"
 
     paper_end_time = time.perf_counter()
@@ -147,7 +158,7 @@ def process_single_paper(row):
 
 
 def main():
-    INPUT_FILE = "math_500.parquet"
+    INPUT_FILE = "subset.parquet"
     OUTPUT_DIR = "processed_batches"  #  We use a directory now instead of a single file
     FINAL_OUTPUT_FILE = "math_sample_processed_final.parquet"
 
@@ -284,4 +295,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-git

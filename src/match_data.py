@@ -23,6 +23,7 @@ from extract_author_aff import get_author_matchings_by_name
 
 
 
+
 #from definition.data.ExtAuthorData import ExtResults
 #from definition.data.MatchedAuthorData import MatchedPaperData, MatchedAffiliationInfo, MatchedAuthorInfo
 
@@ -298,8 +299,10 @@ def run(paper_dirs: list[Path]) -> None:
 
 
 # pipeline: Extraction -> Fuzzy Matching -> Author Linking -> ROR Resolution
-def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata , ext_aff: ExtAuthorInfo,ror_orgs: list, ror_orgs_dict: dict ) -> MatchedPaperData:
+# pipeline: Extraction -> Fuzzy/Hybrid Matching -> Author Linking -> ROR Resolution
+def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata , ext_aff: ExtAuthorInfo, ror_orgs: list, ror_orgs_dict: dict ) -> MatchedPaperData:
 
+    from approach3_hybrid import get_matched_affiliation_hybrid
     # 1. Validate inputs
     if not arxiv_metadata or not ext_aff or not ext_aff.extractions:
         return None
@@ -314,10 +317,11 @@ def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata , ext_aff: Ext
         for aff in author.affiliations:
             paper_affiliations.add(aff)
 
-    # 4. PERFORM FUZZY MATCHING
+    # 4. PERFORM HYBRID MATCHING
     matched_affiliations_map = {}
     for aff_str in paper_affiliations:
-        result_tuple = _get_matched_affiliation(aff_str, (ror_orgs,))
+        # Use the hybrid approach from approach3_hybrid.py
+        result_tuple = get_matched_affiliation_hybrid(aff_str, ror_orgs)
 
         # result_tuple is: (original_aff_string, (ror_id, score))
         ror_id = result_tuple[1][0]
