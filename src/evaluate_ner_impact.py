@@ -10,7 +10,7 @@ ror_orgs = match_data._process_ror_orgs(ror_dataset)
 # Load the 100 failed matches
 df = pd.read_parquet('first_100_failed_matches.parquet')
 
-SUCCESS_THRESHOLD = 50.0  # Define what score counts as a "fix"
+SUCCESS_THRESHOLD = 60.0  # Define what score counts as a "fix"
 
 stats = {
     "total_evaluated": 0,
