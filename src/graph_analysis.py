@@ -201,7 +201,7 @@ def visualize_institutions(G: nx.Graph, partition: dict, degree_dict: dict):
     for comm_id in top_4_comms:
         comm_nodes = [n for n in G.nodes() if partition.get(n) == comm_id]
         comm_nodes_sorted = sorted(comm_nodes, key=lambda x: degree_dict[x], reverse=True)
-        top_nodes.extend(comm_nodes_sorted[:8])
+        top_nodes.extend(comm_nodes_sorted[:3])
 
     SubG = G.subgraph(top_nodes)
 
@@ -228,7 +228,7 @@ def visualize_institutions(G: nx.Graph, partition: dict, degree_dict: dict):
 
     # Huge canvas to accommodate the wide spacing
     fig, ax = plt.subplots(figsize=(20, 16))
-    ax.set_title("Core Institutional Network (Top 8 Hubs - Maximum Spacing)",
+    ax.set_title("Core Institutional Network ",
                  fontsize=22, fontweight='bold', pad=20)
 
     # Draw black connections
@@ -252,13 +252,43 @@ def visualize_institutions(G: nx.Graph, partition: dict, degree_dict: dict):
                             bbox=dict(facecolor="white", edgecolor="black", alpha=0.9, pad=1.5, boxstyle="round,pad=0.3"),
                             ax=ax)
 
-    legend_handles = [
-        mpatches.Patch(color=color_mapping[top_4_comms[i]],
-                       label=f"Cluster {i+1} Hubs")
-        for i in range(len(top_4_comms))
-    ]
-    ax.legend(handles=legend_handles, loc='upper left',
-              title="Legend", title_fontsize=14, fontsize=12, frameon=True)
+    legend_handles = []
+
+    for i, comm_id in enumerate(top_4_comms):
+        # 1. Find all nodes in this specific cluster
+        comm_nodes = [n for n in SubG.nodes() if partition[n] == comm_id]
+
+        # 2. Find the one with the highest degree (most connections) in this cluster
+        if comm_nodes:
+            top_hub_id = max(comm_nodes, key=lambda x: degree_dict[x])
+            top_hub_name = G.nodes[top_hub_id].get('name', top_hub_id)
+
+            # Shorten the name if it's way too long for the legend
+            if len(top_hub_name) > 30:
+                top_hub_name = top_hub_name[:27] + "..."
+
+            label_text = f"Network: {top_hub_name}"
+        else:
+            label_text = f"Cluster {i + 1} Hubs"
+
+        # 3. Create the legend item
+        legend_handles.append(
+            mpatches.Patch(color=color_mapping[comm_id], label=label_text)
+        )
+
+    # 4. Draw a prettier legend
+    ax.legend(handles=legend_handles,
+              loc='upper right',  # Moved to upper right to avoid overlapping left-aligned text
+              title="Major Collaboration Networks",
+              title_fontsize=16,  # Made title slightly larger
+              fontsize=13,  # Made text readable
+              frameon=True,
+              shadow=True,  # Added a nice drop shadow
+              edgecolor="black",  # Added a border
+              facecolor="#f8f9fa",  # Light gray background so it pops
+              borderpad=1.2)  # Give it some breathing room inside the box
+
+    ax.axis("off")
 
     ax.axis("off")
     plt.tight_layout()

@@ -31,13 +31,14 @@ Extract authors and affiliations from a LaTeX preamble.
 Return JSON matching:
 {ExtractionResponse.model_json_schema()}
 Rules:
-- Extract only names and affiliations explicitly present.
-- Match authors to affiliations using the text.
-- Ignore LaTeX commands and formatting.
-- Do not include markers in output.
-- If none, use [].
-- No guessing.
-- Output JSON only.
+Extraction Rules:
+1. Strict Literal Extraction: Extract only author names and institutional affiliations explicitly present in the text.
+2. Marker-Based Mapping: Utilize explicit textual markers (superscripts, asterisks, footnotes) or structural proximity to accurately map each author to their respective affiliations.
+3. Exclude Metadata: Do not include email addresses, job titles, funding acknowledgments, or academic degrees in the author or affiliation fields. 
+4. Multiple Affiliations: If an author belongs to multiple institutions, list each explicitly linked affiliation in their array.
+5. Orphaned Authors: If an author has no identifiable affiliation, return an empty array [] for that author. Zero inference is permitted.
+6. Clean Strings: Remove all linking markers, footnote symbols, and LaTeX structural commands from the final output strings.
+
 
 <LATEX_PREAMBLE>
 {text_input}
@@ -55,14 +56,14 @@ def get_latex_metadata_windows(text_content: str) -> str:
 
     if head_match:
         head_text = text_content[:head_match.start()]
-        if len(head_text) > 5000:
-            head_text = head_text[-5000:]  # Keep the bottom 5000 chars of the head
+        if len(head_text) > 10000:
+            head_text = head_text[-10000:]  # Keep the bottom 5000 chars of the head
     else:
-        head_text = text_content[:5000]
+        head_text = text_content[:10000]
 
     # Grab the last 1000 characters of the entire file.
     # This safely catches \address{} blocks right before \end{document}
-    tail_text = text_content[-1000:]
+    tail_text = text_content[-2000:]
 
     combined_text = (
         "--- START OF DOCUMENT HEAD ---\n"
@@ -76,7 +77,7 @@ def get_latex_metadata_windows(text_content: str) -> str:
 
 
 def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qwen2.5:0.5b",
-                        timeout_seconds=20) -> ExtAuthorInfo:
+                        timeout_seconds=15) -> ExtAuthorInfo:
     _logger.info(f"AI Fallback extraction using Ollama for {arxiv_metadata.arxiv_id}")
 
     text_input = get_latex_metadata_windows(text_content)
