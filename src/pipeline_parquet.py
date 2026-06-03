@@ -214,7 +214,7 @@ def process_single_paper(row):
 
 
 def main():
-    INPUT_FILE = "subset.parquet"
+    INPUT_FILE = "math_subset.parquet"
     OUTPUT_DIR = "processed_batches"  # We use a directory now instead of a single file
     FINAL_OUTPUT_FILE = "math_sample_processed_final.parquet"
 
@@ -249,8 +249,8 @@ def main():
 
     worker_func = partial(process_single_paper, ror_orgs=ror_orgs, ror_orgs_dict=ror_orgs_dict)
 
-    MAX_CORES = 2
-    BATCH_SIZE = 50
+    MAX_CORES = 4
+    BATCH_SIZE = 1000
 
     success_count = 0
     extraction_failed_count = 0
@@ -285,7 +285,7 @@ def main():
 
             # Execute the batch in parallel
 
-            results = list(executor.map(process_single_paper, rows, chunksize=5))
+            results = list(executor.map(process_single_paper, rows, chunksize=50))
             # Add these new IDs to our set so we don't process them again if we read the file twice
             for r in rows:
                 processed_ids.add(r['id'])
