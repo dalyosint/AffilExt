@@ -9,6 +9,12 @@ import polars as pl
 from pydantic import BaseModel, ValidationError
 from typing import List, Optional
 from rapidfuzz import fuzz
+import sys
+from pathlib import Path
+
+# Experiments live outside src/, so make the pipeline modules importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 # existing pipeline tools
 import extract_cmds
 import extract_author_aff

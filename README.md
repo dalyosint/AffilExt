@@ -38,8 +38,9 @@ src/
 ├── match_data.py           # Matches affiliations to ROR organizations (RapidFuzz + spaCy NER)
 ├── ai_fallback.py          # LLM extraction via Ollama with a Pydantic-validated JSON schema
 ├── graph_analysis.py       # Institution collaboration graph + Louvain community detection
-├── experiment_llm.py, analyze_thresholds.py, plot_ablation.py, ...  # Research experiments
-└── scripts/                # One-off analysis and statistics scripts
+└── scripts/                # Stats and manual-evaluation tools for the file-based pipeline (main.py)
+
+experiments/                # Research scripts used to pick the LLM, prompts and thresholds (see experiments/README.md)
 ```
 
 ## ⚙️ Installation

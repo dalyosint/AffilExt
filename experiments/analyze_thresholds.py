@@ -2,6 +2,12 @@ import json
 import polars as pl
 from rapidfuzz import fuzz
 import pandas as pd
+import sys
+from pathlib import Path
+
+# Experiments live outside src/, so make the pipeline modules importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 from pipeline_parquet import parse_metadata
 
 

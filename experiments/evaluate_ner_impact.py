@@ -1,5 +1,11 @@
 import pandas as pd
 import json
+import sys
+from pathlib import Path
+
+# Experiments live outside src/, so make the pipeline modules importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 from approach1_spacy_ner import get_matched_affiliation_spacy
 import match_data
 
