@@ -289,8 +289,6 @@ def visualize_institutions(G: nx.Graph, partition: dict, degree_dict: dict):
               borderpad=1.2)  # Give it some breathing room inside the box
 
     ax.axis("off")
-
-    ax.axis("off")
     plt.tight_layout()
     plt.savefig("connected_institutions_network_max_spaced.png", dpi=300, bbox_inches='tight')
     print("Saved connected_institutions_network_max_spaced.png")

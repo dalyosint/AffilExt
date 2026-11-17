@@ -54,7 +54,7 @@ for index, row in df.iterrows():
                     stats["persistent_failures"] += 1
 
     except Exception as e:
-        pass
+        print(f"Skipping row {index}: {e}")
 
 print("=" * 50)
 print("NER vs BASELINE: FINAL IMPACT REPORT")
