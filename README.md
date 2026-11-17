@@ -7,6 +7,8 @@
 ## 📌 Overview
 AffilExt is a high-performance data pipeline designed to extract complex author-affiliation metadata from unstructured LaTeX source files. Built to process the entire arXiv pre-print corpus, this system bridges the data availability gap by parsing terabytes of raw text into a structured, queryable knowledge graph.
 
+It starts with an **ETL pipeline** that pulls the full arXiv source corpus from Amazon S3, strips images and other binaries, and turns it into a Parquet data lake with one row per paper (LaTeX text + metadata).
+
 To balance extraction fidelity with computational constraints, AffilExt utilizes a **Cost-Optimized Hybrid Architecture**:
 1. **High-Speed Deterministic Parsing:** A highly optimized, rule-based extraction engine processes standard formatting at scale.
 2. **Validation Gate:** Extracted metadata undergoes consistency checks to flag malformed or ambiguous outputs.
@@ -15,14 +17,19 @@ To balance extraction fidelity with computational constraints, AffilExt utilizes
 ## 🏗️ System Architecture
 
 ```text
-[Raw Data]       [Stage 1: Rule-Based]      [Stage 2: Validation]       [Stage 3: Hybrid LLM]       [Output]
+ [Stage 0: ETL]                                     [Stage 1: Rule-Based]   [Stage 2: Quality Gate]      [Stage 3: LLM Fallback]
 
- arXiv S3   ──>  Regex Extractor      ──>   Consistency Checks   ──>   (Pass) ───────────────┐
-   or                  │                           │                                         v
- Kaggle             (Fast)                  (Missing Data?)        (Fail) ──> LLM API ──> Parquet Storage
-                                                                              (Repair)       │
-                                                                                             v
-                                                                                   Social Graph Generation
+ arXiv S3 (requester-pays)                          LaTeX command           Author F1 vs arXiv           only for papers that
+   │ download, verify MD5,                          extraction + parsing    metadata ≥ 0.70  and         fail the gate:
+   │ strip images/binaries                          schemes                 ROR match found              Ollama (qwen2.5) with
+   v                                                       │                       │                     JSON schema
+ filtered source tars ──> Parquet lake ──────────────────> ┘ ─────────────────────> ├── pass ──────┐            │
+   + Kaggle metadata      (id, text, categories,                                    └── fail ──────┼──> ────────┘
+                           metadata; zstd shards)                                                  v
+                                                                          Parquet output + run summary
+                                                                                   │
+                                                                                   v
+                                                                     Institution collaboration graph
 ```
 
 ## 📂 Project Structure
@@ -43,6 +50,7 @@ src/
 ├── graph_analysis.py       # Institution collaboration graph + Louvain community detection
 └── scripts/                # Stats and manual-evaluation tools for the file-based pipeline (main.py)
 
+etl/                        # Stage 0: arXiv S3 download/filtering and Parquet lake builder (see etl/README.md)
 experiments/                # Research scripts used to pick the LLM, prompts and thresholds (see experiments/README.md)
 tests/                      # pytest suite
 ```
@@ -66,14 +74,26 @@ ollama pull qwen2.5:0.5b
 
 ## 🚀 Usage
 
-Run all commands from the `src/` directory.
+### 0. Data acquisition (ETL)
+
+```bash
+cd etl
+python download_arxiv_tex_src.py --dest ./rawdata --download-in-parallel 8 --download-everything-at-once
+python build_arxiv_lake.py --source-dir ./rawdata --metadata arxiv-metadata-oai-snapshot.json --output-dir ./arxiv_lake
+```
+
+The download needs AWS credentials, because the arXiv bucket is requester-pays (you pay for the transfer).
+Details, options and costs: [etl/README.md](etl/README.md).
+
+Run the remaining commands from the `src/` directory.
 
 ### Hybrid Parquet pipeline
 
-Input: a Parquet file with the columns `id`, `text` (full LaTeX source) and `metadata` (arXiv metadata JSON).
+Input: a Parquet file, or a directory of Parquet shards such as the lake built in stage 0, with the columns `id`, `text` (full LaTeX source) and `metadata` (arXiv metadata JSON).
 
 ```bash
 python pipeline_parquet.py --input math_subset.parquet --output math_sample_processed_final.parquet --workers 4
+python pipeline_parquet.py --input ../etl/arxiv_lake --output lake_processed.parquet --workers 8   # all shards of the lake
 ```
 
 Results are checkpointed into `processed_batches/` after every batch. If a run is interrupted,
@@ -121,6 +141,7 @@ the rule-based LaTeX command extraction and parsing schemes (`extract_cmds.py`, 
 ROR matching (`match_data.py`, `ror_dl.py`) and the analysis tools in `src/scripts/`.
 
 Developed in this bachelor thesis on top of that base:
+- ETL pipeline for the full arXiv corpus: S3 bulk download with MD5 verification and binary filtering, and a Parquet data lake builder (`etl/`, developed together with my thesis supervisor)
 - Scalable Parquet pipeline with multiprocessing and crash-resumable checkpoints (`pipeline_parquet.py`)
 - Quality gate on author similarity and selective LLM fallback via Ollama (`ai_fallback.py`, `llm_extraction.py`, `author_matching.py`)
 - spaCy NER–assisted ROR matching (`approach1_spacy_ner.py`)

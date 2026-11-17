@@ -206,10 +206,24 @@ def _load_processed_ids(output_dir: Path) -> set:
     return processed_ids
 
 
+def _input_files(path: Path) -> list[Path]:
+    """A single Parquet file, or all Parquet shards of a directory (sorted, so batch numbers are stable)."""
+    if path.is_dir():
+        return sorted(path.glob("*.parquet"))
+    return [path] if path.is_file() else []
+
+
+def _iter_batches(files: list[Path], batch_size: int):
+    """Streams record batches over all input files without loading them into memory."""
+    for file in files:
+        yield from pq.ParquetFile(file).iter_batches(batch_size=batch_size)
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hybrid (rule-based + LLM) author-affiliation extraction over a Parquet file.")
     parser.add_argument("-i", "--input", default="math_subset.parquet",
-                        help="Input Parquet file with columns id, text, metadata. Default: %(default)s")
+                        help="Input Parquet file, or a directory of Parquet shards (e.g. from etl/build_arxiv_lake.py), "
+                             "with columns id, text, metadata. Default: %(default)s")
     parser.add_argument("-o", "--output", default="math_sample_processed_final.parquet",
                         help="Final merged output Parquet file. Default: %(default)s")
     parser.add_argument("--batch-dir", default="processed_batches",
@@ -293,8 +307,9 @@ def main():
     batch_dir = Path(args.batch_dir)
     summary_file = output_file.with_name(output_file.stem + ".run_summary.json")
 
-    if not input_file.is_file():
-        logger.error("Input file not found: %s", input_file)
+    input_files = _input_files(input_file)
+    if not input_files:
+        logger.error("No input Parquet file(s) found at: %s", input_file)
         return
 
     total_start_time = time.time()
@@ -308,16 +323,14 @@ def main():
     ai_failed_count = 0
     skipped_count = 0
 
-    logger.info("Processing %s with %d workers (ROR dataset is loaded once per worker)...",
-                input_file, args.workers)
+    logger.info("Processing %d input file(s) from %s with %d workers (ROR dataset is loaded once per worker)...",
+                len(input_files), input_file, args.workers)
     processing_start_time = time.time()
-
-    parquet_file = pq.ParquetFile(input_file)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, initializer=init_worker,
                                                 initargs=(args.log_level, args.spacy_skip_score)) as executor:
 
-        for batch_counter, batch in enumerate(parquet_file.iter_batches(batch_size=args.batch_size), start=1):
+        for batch_counter, batch in enumerate(_iter_batches(input_files, args.batch_size), start=1):
             df_batch = pl.from_arrow(batch)
 
             # Skip papers that were already processed in a previous run

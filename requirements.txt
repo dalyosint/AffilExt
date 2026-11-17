@@ -1,3 +1,7 @@
+# --- ETL: arXiv S3 download and Parquet lake (etl/) ---
+boto3[crt]~=1.35
+tqdm~=4.67
+
 # --- Core pipeline (main.py, pipeline_parquet.py) ---
 requests==2.32.3
 beautifulsoup4==4.12.3
