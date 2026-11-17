@@ -21,9 +21,8 @@ from pathlib import Path
 import jsonpickle
 import polars as pl
 import pyarrow.parquet as pq
-from rapidfuzz import fuzz
-
 import ai_fallback
+import author_matching
 import extract_author_aff
 import extract_cmds
 import match_data
@@ -32,8 +31,7 @@ from definition.data.Author import Author
 
 logger = logging.getLogger("ParquetPipeline")
 
-# Gate 1: minimum per-name similarity (0-100) and minimum author-list F1 (0-1)
-NAME_SIMILARITY_THRESHOLD = 70
+# Gate 1: minimum author-list F1 (0-1); the per-name similarity threshold lives in author_matching
 AUTHOR_F1_THRESHOLD = 0.70
 SLOW_PAPER_SECONDS = 15.0
 
@@ -94,44 +92,6 @@ def init_worker(log_level: int | str = logging.INFO) -> None:
     global_ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
 
 
-def calculate_hybrid_f1(extracted_authors, ground_truth_authors, threshold=NAME_SIMILARITY_THRESHOLD) -> float:
-    """F1 between two author lists; names match if max(ratio, token_set_ratio) >= threshold."""
-    if not extracted_authors and not ground_truth_authors:
-        return 1.0
-    if not extracted_authors:
-        return 0.0
-
-    matched_gt = set()
-    true_positives = 0
-
-    for ext_author in extracted_authors:
-        e_name = ext_author.name.lower().strip()
-        best_idx = -1
-        best_score = 0
-
-        for j, gt_author in enumerate(ground_truth_authors):
-            if j in matched_gt:
-                continue
-
-            t_name = gt_author.name.lower().strip()
-            score = max(fuzz.ratio(e_name, t_name), fuzz.token_set_ratio(e_name, t_name))
-
-            if score > best_score:
-                best_score = score
-                best_idx = j
-
-        if best_score >= threshold:
-            matched_gt.add(best_idx)
-            true_positives += 1
-
-    precision = true_positives / len(extracted_authors)
-    recall = true_positives / len(ground_truth_authors) if ground_truth_authors else 0.0
-
-    if precision + recall > 0:
-        return 2 * precision * recall / (precision + recall)
-    return 0.0
-
-
 def process_single_paper(row: dict) -> tuple:
     """Processes one paper row. Runs inside a worker process."""
     paper_start_time = time.perf_counter()
@@ -156,7 +116,8 @@ def process_single_paper(row: dict) -> tuple:
         if ext_info_trad and ext_info_trad.extractions:
             # Gate 1: author list similarity
             best_ext = match_data._get_best_extraction(ext_info_trad.extractions)
-            f1_score = calculate_hybrid_f1(best_ext.authors, meta_obj.authors)
+            f1_score = author_matching.author_f1([a.name for a in best_ext.authors],
+                                                 [a.name for a in meta_obj.authors])
 
             if f1_score >= AUTHOR_F1_THRESHOLD:
                 logger.debug("[%s] Rule-based extraction SUCCESS (F1: %.2f).", paper_id, f1_score)

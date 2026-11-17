@@ -8,51 +8,8 @@ from pathlib import Path
 # Experiments live outside src/, so make the pipeline modules importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from author_matching import author_f1
 from pipeline_parquet import parse_metadata
-
-
-def calculate_experimental_f1(extracted_authors, ground_truth_authors, method, threshold):
-    """Calculates F1 score based on a specific RapidFuzz method and threshold."""
-    if not extracted_authors and not ground_truth_authors:
-        return 1.0
-    if not extracted_authors:
-        return 0.0
-
-    matched_gt = set()
-    true_positives = 0
-
-    for ext_author in extracted_authors:
-        e_name = ext_author.get("name", "").lower().strip()
-        best_idx = -1
-        best_score = 0
-
-        for j, gt_author in enumerate(ground_truth_authors):
-            if j in matched_gt:
-                continue
-
-            t_name = gt_author.get("name", "").lower().strip()
-
-            if method == "ratio":
-                score = fuzz.ratio(e_name, t_name)
-            elif method == "token":
-                score = fuzz.token_set_ratio(e_name, t_name)
-            elif method == "hybrid":
-                score = max(fuzz.ratio(e_name, t_name), fuzz.token_set_ratio(e_name, t_name))
-
-            if score > best_score:
-                best_score = score
-                best_idx = j
-
-        if best_score >= threshold:
-            matched_gt.add(best_idx)
-            true_positives += 1
-
-    precision = true_positives / len(extracted_authors)
-    recall = true_positives / len(ground_truth_authors) if ground_truth_authors else 0.0
-
-    if precision + recall > 0:
-        return 2 * precision * recall / (precision + recall)
-    return 0.0
 
 
 def main():
@@ -148,7 +105,8 @@ def main():
                 ext_authors = run['ai_output']
                 gt_authors = gt_dict.get(paper_id, [])
 
-                f1 = calculate_experimental_f1(ext_authors, gt_authors, method, thresh)
+                f1 = author_f1([a.get("name", "") for a in ext_authors],
+                               [a.get("name", "") for a in gt_authors], threshold=thresh, method=method)
                 total_f1 += f1
 
             avg_f1 = total_f1 / len(target_runs) if target_runs else 0

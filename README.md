@@ -36,7 +36,9 @@ src/
 ├── extract_author_aff.py   # Rule-based parsing of those commands into authors + affiliations
 ├── definition/             # Parsing schemes (one per LaTeX author style) and data classes
 ├── match_data.py           # Matches affiliations to ROR organizations (RapidFuzz + spaCy NER)
-├── ai_fallback.py          # LLM extraction via Ollama with a Pydantic-validated JSON schema
+├── ai_fallback.py          # LLM fallback for papers where rule-based extraction fails
+├── llm_extraction.py       # Shared LLM parts: response schema, prompts, LaTeX windowing, Ollama call
+├── author_matching.py      # Fuzzy author-name comparison (F1 quality gate)
 ├── graph_analysis.py       # Institution collaboration graph + Louvain community detection
 └── scripts/                # Stats and manual-evaluation tools for the file-based pipeline (main.py)
 
