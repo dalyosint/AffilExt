@@ -188,3 +188,9 @@ cython_debug/
 # OS / pipeline outputs
 .DS_Store
 processed_batches/
+
+# ETL data (stage 0)
+rawdata/
+arxiv_lake/
+*.tar
+arXiv_src_manifest.xml

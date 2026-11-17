@@ -12,7 +12,7 @@ addopts = "-q"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "etl"]
 
 [tool.ruff.lint]
 # pyflakes, pycodestyle, import sorting, bugbear, pyupgrade
@@ -28,6 +28,7 @@ ignore = [
 "src/definition/data/Trie.py" = ["UP031"]     # third-party trie-regex recipe, kept verbatim
 "src/extract_author_aff.py" = ["F403"]        # star imports load all parsing schemes as plugins
 "src/scripts/*" = ["E731", "B007"]            # original analysis scripts, kept as they are
+"etl/download_arxiv_tex_src.py" = ["E701", "UP035", "UP045", "UP006", "F401", "I001"]  # kept as originally written
 
 [tool.ruff.lint.isort]
 known-first-party = ["definition", "scripts"]
