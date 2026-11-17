@@ -88,7 +88,7 @@ def test_batches_with_all_null_results_can_be_merged(tmp_path):
 
 
 def test_main_end_to_end_with_resume(pipeline, fake_ror, monkeypatch, tmp_path):
-    """Runs main() on a small Parquet file twice: the second run must skip everything (resume)."""
+    """Runs main() twice on a directory of shards: the second run must skip everything (resume)."""
     import concurrent.futures
     import json
     import sys
@@ -102,9 +102,12 @@ def test_main_end_to_end_with_resume(pipeline, fake_ror, monkeypatch, tmp_path):
     # threads instead of processes so the stubs above also apply inside the workers
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", concurrent.futures.ThreadPoolExecutor)
 
-    input_file = tmp_path / "in.parquet"
+    # a directory of shards, as produced by etl/build_arxiv_lake.py
+    input_file = tmp_path / "lake"
+    input_file.mkdir()
     output_file = tmp_path / "out.parquet"
-    pl.DataFrame([row("good", GOOD_TEX), row("bad", NO_AUTHOR_TEX)]).write_parquet(input_file)
+    pl.DataFrame([row("good", GOOD_TEX)]).write_parquet(input_file / "shard_0000.parquet")
+    pl.DataFrame([row("bad", NO_AUTHOR_TEX)]).write_parquet(input_file / "shard_0001.parquet")
     argv = ["pipeline_parquet.py", "-i", str(input_file), "-o", str(output_file),
             "--batch-dir", str(tmp_path / "batches"), "-w", "1", "-b", "1"]
     monkeypatch.setattr(sys, "argv", argv)
@@ -127,3 +130,17 @@ def test_main_end_to_end_with_resume(pipeline, fake_ror, monkeypatch, tmp_path):
     assert summary["papers"]["processed_this_run"] == 0
     assert summary["papers"]["skipped_already_processed"] == 2
     assert pl.read_parquet(output_file).height == 2
+
+
+def test_input_can_be_a_file_or_a_directory_of_shards(tmp_path):
+    single = tmp_path / "one.parquet"
+    pl.DataFrame([row("a", GOOD_TEX)]).write_parquet(single)
+    shards = tmp_path / "lake"
+    shards.mkdir()
+    for name in ["shard_0001.parquet", "shard_0000.parquet"]:
+        pl.DataFrame([row(name, GOOD_TEX)]).write_parquet(shards / name)
+
+    assert pp._input_files(single) == [single]
+    assert [f.name for f in pp._input_files(shards)] == ["shard_0000.parquet", "shard_0001.parquet"]
+    assert pp._input_files(tmp_path / "missing.parquet") == []
+    assert sum(b.num_rows for b in pp._iter_batches(pp._input_files(shards), batch_size=1)) == 2
