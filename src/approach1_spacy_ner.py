@@ -18,7 +18,7 @@ from functools import lru_cache
 from rapidfuzz import fuzz, process
 
 # Import the helper functions from match_data instead of duplicating them
-from match_data import _get_best_match, _pre_process_string
+from match_data import get_best_match, pre_process_string
 
 _logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ def _get_nlp():
         import spacy
         try:
             _nlp = spacy.load(SPACY_MODEL)
-        except OSError:
-            raise RuntimeError(f"spaCy model not found. Run: python -m spacy download {SPACY_MODEL}")
+        except OSError as e:
+            raise RuntimeError(f"spaCy model not found. Run: python -m spacy download {SPACY_MODEL}") from e
         _logger.info("spaCy model '%s' loaded.", SPACY_MODEL)
     return _nlp
 
@@ -91,19 +91,19 @@ def _fuzzy_match(preprocessed: str) -> tuple[str, float]:
         scorer=fuzz.partial_ratio,
         limit=_TOP_MATCHES_LIMIT
     )
-    best_match = _get_best_match(matches, preprocessed)
+    best_match = get_best_match(matches, preprocessed)
     return _current_orgs[best_match[2]][0], best_match[1]
 
 
 @lru_cache(maxsize=_CACHE_SIZE)
 def _match_cached(affiliation: str) -> tuple[str, float]:
     if SPACY_SKIP_SCORE is not None:
-        raw_match = _fuzzy_match(_pre_process_string(affiliation))
+        raw_match = _fuzzy_match(pre_process_string(affiliation))
         if raw_match[1] >= SPACY_SKIP_SCORE:
             return raw_match
 
     cleaned = extract_org_name_with_spacy(affiliation)
-    return _fuzzy_match(_pre_process_string(cleaned))
+    return _fuzzy_match(pre_process_string(cleaned))
 
 
 def get_matched_affiliation_spacy(

@@ -5,8 +5,7 @@ import regex
 
 import threaded_run
 import util
-from definition import latex
-from definition import reg_exp
+from definition import latex, reg_exp
 from definition.data.ExtCmdData import ExtCmdData, LatexCmd
 
 _logger: logging.Logger = logging.getLogger(__name__)

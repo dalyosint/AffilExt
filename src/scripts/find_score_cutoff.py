@@ -1,5 +1,5 @@
 import util
-from definition.data.MatchedAuthorData import MatchedPaperData, MatchedAuthorInfo
+from definition.data.MatchedAuthorData import MatchedAuthorInfo, MatchedPaperData
 
 _CHUNK_SIZE = 10
 _SCORE_POINTS = [95, 85, 75, 65, 55, 45, 35, 25, 15, 5]
@@ -93,7 +93,7 @@ def _get_matched_data() -> list[MatchedAuthorInfo]:
 def _affs(matched_data: list[MatchedAuthorInfo]):
     aff_matchings = _get_aff_matchings(matched_data)
     aff_chunks = _check_matchings(aff_matchings)
-    print(f"\n[AFF STATS]")
+    print("\n[AFF STATS]")
     for aff_chunk, score_point in zip(aff_chunks, _SCORE_POINTS):
         print(f"[{score_point}] {aff_chunk}")
 
@@ -101,7 +101,7 @@ def _affs(matched_data: list[MatchedAuthorInfo]):
 def _names(matched_data: list[MatchedAuthorInfo]):
     name_matchings = _get_name_matchings(matched_data)
     name_chunks = _check_matchings(name_matchings)
-    print(f"\n[NAME STATS]")
+    print("\n[NAME STATS]")
     for name_chunk, score_point in zip(name_chunks, _SCORE_POINTS):
         print(f"[{score_point}] {name_chunk}")
 

@@ -277,7 +277,7 @@ def _get_nested_with_group_name(group_name: str) -> str:
 NESTED_CONTENT_IN_CURLY_STR = (
     r"(?P<ne>"                                   # start a named capturing group called "ne"
         r"\{"                                    # non-escaped, opening curly brace
-            r"([^{}]|(?&ne))*"                   # match any non-curly brace or start a recursive pattern containing the group "ne" 
+            r"([^{}]|(?&ne))*"                   # match any non-curly brace or start a recursive pattern containing the group "ne"
         r"\}"                                    # non-escaped, closing curly brace
     r")"                                         # close named capturing group
 )
@@ -326,7 +326,7 @@ AUTHORSHIP = regex.compile(
 AUTHORSHIP_ENV = regex.compile(
     r"(?<!\\(?:(?:re)?newcommand|def)\s*)"       # do not match a command definition (negative lookbehind)
     r"\\"
-    r"(?:mdxauthorstart\{\}|begin\{author\})"  
+    r"(?:mdxauthorstart\{\}|begin\{author\})"
     r"\s*"
     r".*?"
     r"(?:mdxauthorend\{\}|end\{author\})",
@@ -916,7 +916,7 @@ LR_SUPER_AUTHOR = regex.compile(
     r"\[[^]]+\]"                                 # anything that isn't a closing bracket inside brackets (short name)
     r"\{"                                        # opening curly brace
         r"(?P<name>.+?)\s*\\rsuper\s*"           # anything that stands before \rsuper (non-greedy, no whitespaces), group(name)
-        r"(?P<id>.*?)"                           # non-greedy match for the identifier of the address, group(id) 
+        r"(?P<id>.*?)"                           # non-greedy match for the identifier of the address, group(id)
     r"\}",                                       # closing curly brace
     regex.IGNORECASE
 )
@@ -925,7 +925,7 @@ LR_SUPER_AFFILIATION = regex.compile(
     r"\\address"                                 # the address command
     r"\{\{"                                      # two opening curly braces, one for the address, one for the affiliation identifier
             r"\\lsuper\s*\{?(?P<id>.*?)\}?\s*"   # the \lsuper command followed by the identifier, group(id)
-        r"\}"                                    # the closing curly brace for \lsuper 
+        r"\}"                                    # the closing curly brace for \lsuper
         r"(?P<name>.*)"                          # the name of the affiliation, group(name)
     r"\}",                                       # closing curly brace of the address command
     regex.IGNORECASE

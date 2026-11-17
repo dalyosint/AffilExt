@@ -2,7 +2,6 @@
 
 Results are appended to a JSONL file after every run so the experiment can be resumed after a crash.
 """
-import asyncio
 import json
 import logging
 import os
@@ -44,7 +43,7 @@ def extract_with_ollama_experiment(text_input, model_name, prompt_template, temp
         parsed_data = llm_extraction.query_ollama(prompt, model_name, temperature=temp,
                                                   timeout_seconds=timeout_seconds)
         return parsed_data, True, None
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("TIMEOUT: %s did not respond within %ss. Skipping.", model_name, timeout_seconds)
         return None, False, f"Timeout: model failed to respond within {timeout_seconds} seconds."
     except ValidationError:
@@ -95,7 +94,7 @@ def _load_processed_configs(jsonl_file: str) -> set:
     if not os.path.exists(jsonl_file):
         return processed_configs
 
-    with open(jsonl_file, 'r', encoding='utf-8') as f:
+    with open(jsonl_file, encoding='utf-8') as f:
         for line in f:
             try:
                 record = json.loads(line)

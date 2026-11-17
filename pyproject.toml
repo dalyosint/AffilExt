@@ -1,0 +1,33 @@
+[project]
+name = "affilext"
+version = "0.2.0"
+description = "Hybrid rule-based + LLM extraction of author affiliations from arXiv LaTeX sources"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, import sorting, bugbear, pyupgrade
+select = ["F", "E", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # long lines: prompts and log messages are easier to read unwrapped
+    "B008",  # function calls in argument defaults are used intentionally by argparse helpers
+    "B905",  # zip(strict=...): the parsers rely on zip's truncating behaviour
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/definition/latex.py" = ["E701"]          # compact one-line lookup tables
+"src/definition/data/Trie.py" = ["UP031"]     # third-party trie-regex recipe, kept verbatim
+"src/extract_author_aff.py" = ["F403"]        # star imports load all parsing schemes as plugins
+"src/scripts/*" = ["E731", "B007"]            # original analysis scripts, kept as they are
+
+[tool.ruff.lint.isort]
+known-first-party = ["definition", "scripts"]

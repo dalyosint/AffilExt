@@ -37,7 +37,7 @@ class Trie:
                 try:
                     recurse = self._pattern(data[char])
                     alt.append(quote(char) + recurse)
-                except:
+                except TypeError:  # sub-pattern is None -> plain character
                     cc.append(quote(char))
             else:
                 q = 1

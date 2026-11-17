@@ -1,5 +1,6 @@
-import pandas as pd
 import json
+
+import pandas as pd
 import plotly.graph_objects as go
 
 
@@ -13,7 +14,7 @@ def main():
     raw_data = [ ]
     for file in json_files:
         try:
-            with open(file, 'r', encoding='utf-8') as f:
+            with open(file, encoding='utf-8') as f:
                 raw_data.extend(json.load(f))
         except FileNotFoundError:
             print(f"Warning: {file} not found.")

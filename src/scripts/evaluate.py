@@ -55,7 +55,7 @@ def _eval_ai_answer(paper_dir: pathlib.Path, ai_stats: dict):
 Author name: <name>
     Affiliations: <affiliation1>, <affiliation2>
 ´´´
-Extract the data from: 
+Extract the data from:
 '{cmd}'"""
 
     ai_stats["in_tokens"] += _get_tokens(ai_instruction)

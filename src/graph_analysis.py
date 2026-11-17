@@ -1,18 +1,18 @@
-import os
-import itertools
-from collections import Counter
 import dataclasses
-from typing import Dict, List, Union, Set
-import matplotlib.patches as mpatches
+import itertools
+import os
+from collections import Counter
 
-# Data manipulation and parsing
-import polars as pl
+import community.community_louvain as community_louvain
 import jsonpickle
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 
 # Graph and Network Analysis
 import networkx as nx
-import community.community_louvain as community_louvain
-import matplotlib.pyplot as plt
+
+# Data manipulation and parsing
+import polars as pl
 
 # IMPORTANT: We import your custom classes so jsonpickle knows how to decode the strings
 from definition.data.MatchedAuthorData import MatchedPaperData
@@ -20,7 +20,7 @@ from definition.data.MatchedAuthorData import MatchedPaperData
 # --- 1. CONNECTED PAPERS-STYLE DATACLASSES ---
 
 InstitutionID = str
-Edge = List[Union[InstitutionID, float]]  # [InstitutionID, InstitutionID, weight]
+Edge = list[InstitutionID | float]  # [InstitutionID, InstitutionID, weight]
 
 
 @dataclasses.dataclass
@@ -28,7 +28,7 @@ class SharedAuthor:
     """An author who bridges multiple institutions (mimics CommonAuthor)."""
     id: str
     name: str
-    institutions: List[InstitutionID]
+    institutions: list[InstitutionID]
 
 
 @dataclasses.dataclass
@@ -37,7 +37,7 @@ class InstitutionNode:
     id: InstitutionID
     name: str
     author_count: int
-    pos: List[float] = dataclasses.field(default_factory=list)
+    pos: list[float] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -45,9 +45,9 @@ class InstitutionGraph:
     """
     The complete graph structure, modeled after ConnectedPapers Graph.
     """
-    nodes: Dict[InstitutionID, InstitutionNode]
-    edges: List[Edge]
-    shared_authors: List[SharedAuthor]
+    nodes: dict[InstitutionID, InstitutionNode]
+    edges: list[Edge]
+    shared_authors: list[SharedAuthor]
 
 
 # --- 2. DATA PROCESSING & GRAPH BUILDING ---
@@ -66,13 +66,13 @@ def load_and_build_data_structures(parquet_filename: str) -> InstitutionGraph:
     df_matched = df.filter(pl.col("matched_info").is_not_null())
 
     # Mapping Author -> Set of Institution ROR IDs
-    author_to_institutions: Dict[str, Set[str]] = {}
+    author_to_institutions: dict[str, set[str]] = {}
     # Track unique authors per institution for node sizing
-    institution_to_authors: Dict[str, Set[str]] = {}
+    institution_to_authors: dict[str, set[str]] = {}
     # Add a new dictionary at the top of the function to track names
-    institution_names: Dict[str, str] = {}
+    institution_names: dict[str, str] = {}
     # Add this dictionary right before the loop
-    institution_names: Dict[str, str] = {}
+    institution_names: dict[str, str] = {}
 
     print("Decoding JSON and mapping cross-institutional authors...")
     for json_str in df_matched["matched_info"]:
@@ -108,9 +108,9 @@ def load_and_build_data_structures(parquet_filename: str) -> InstitutionGraph:
             continue
 
     # Build connected dataclasses
-    nodes: Dict[InstitutionID, InstitutionNode] = {}
-    edges_dict: Dict[tuple, int] = {}
-    shared_authors: List[SharedAuthor] = []
+    nodes: dict[InstitutionID, InstitutionNode] = {}
+    edges_dict: dict[tuple, int] = {}
+    shared_authors: list[SharedAuthor] = []
 
     # 1. Create Nodes
     for inst_id, authors in institution_to_authors.items():
@@ -137,7 +137,7 @@ def load_and_build_data_structures(parquet_filename: str) -> InstitutionGraph:
                 edges_dict[edge_pair] = edges_dict.get(edge_pair, 0) + 1
 
     # Format edges into the [ID, ID, weight] format
-    edges: List[Edge] = [[pair[0], pair[1], float(weight)] for pair, weight in edges_dict.items()]
+    edges: list[Edge] = [[pair[0], pair[1], float(weight)] for pair, weight in edges_dict.items()]
 
     graph_data = InstitutionGraph(
         nodes=nodes,

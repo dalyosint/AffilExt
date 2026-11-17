@@ -1,9 +1,8 @@
 import logging
+import logging.handlers
 import multiprocessing
-from logging import handlers
 
 import util
-
 
 # based on https://docs.python.org/3/howto/logging-cookbook.html#logging-to-a-single-file-from-multiple-processes
 

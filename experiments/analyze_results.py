@@ -1,5 +1,6 @@
-import polars as pl
 import time
+
+import polars as pl
 
 
 def extract_scenarios(parquet_file: str):

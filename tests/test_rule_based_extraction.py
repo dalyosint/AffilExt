@@ -16,7 +16,7 @@ def extract(tex: str, names=AUTHORS):
     info = extract_author_aff.extract_affiliations_from_obj(extract_cmds.extract_cmds_from_string(tex), meta)
     if not info or not info.extractions:
         return None
-    best = match_data._get_best_extraction(info.extractions)
+    best = match_data.get_best_extraction(info.extractions)
     return [(a.name, a.affiliations) for a in best.authors]
 
 

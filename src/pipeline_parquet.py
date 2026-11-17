@@ -17,13 +17,14 @@ import json
 import logging
 import statistics
 import subprocess
-from datetime import datetime, timezone
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jsonpickle
 import polars as pl
 import pyarrow.parquet as pq
+
 import ai_fallback
 import approach1_spacy_ner
 import author_matching
@@ -93,9 +94,9 @@ def init_worker(log_level: int | str = logging.INFO, spacy_skip_score: float | N
     global global_ror_orgs, global_ror_orgs_dict
     configure_logging(log_level)
     approach1_spacy_ner.SPACY_SKIP_SCORE = spacy_skip_score
-    ror_dataset = match_data._get_ror_dataset()
-    global_ror_orgs = match_data._process_ror_orgs(ror_dataset)
-    global_ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
+    ror_dataset = match_data.get_ror_dataset()
+    global_ror_orgs = match_data.process_ror_orgs(ror_dataset)
+    global_ror_orgs_dict = match_data.process_ror_orgs_to_dict(ror_dataset)
 
 
 def process_single_paper(row: dict) -> tuple:
@@ -121,7 +122,7 @@ def process_single_paper(row: dict) -> tuple:
 
         if ext_info_trad and ext_info_trad.extractions:
             # Gate 1: author list similarity
-            best_ext = match_data._get_best_extraction(ext_info_trad.extractions)
+            best_ext = match_data.get_best_extraction(ext_info_trad.extractions)
             f1_score = author_matching.author_f1([a.name for a in best_ext.authors],
                                                  [a.name for a in meta_obj.authors])
 
@@ -250,7 +251,7 @@ def build_run_summary(args: argparse.Namespace, status_counts: dict, ai_pushed: 
     """Everything needed to report and reproduce a run: settings, code version, outcome counts and timings."""
     processed = sum(status_counts.values())
     return {
-        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
         "settings": {
             "input": str(args.input),

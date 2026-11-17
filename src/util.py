@@ -126,7 +126,7 @@ def get_all_tex_files(dir_path: Path, ignore_cls=True) -> list[Path]:
     if not dir_path.is_dir():
         return []
 
-    return [file_path for file_path in list(dir_path.rglob(f"*.tex")) if
+    return [file_path for file_path in list(dir_path.rglob("*.tex")) if
             not _should_ignore_file(file_path, ignore_cls=ignore_cls)]
 
 

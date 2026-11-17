@@ -96,9 +96,9 @@ def test_main_end_to_end_with_resume(pipeline, fake_ror, monkeypatch, tmp_path):
     import match_data
 
     ror_orgs, ror_orgs_dict = fake_ror
-    monkeypatch.setattr(match_data, "_get_ror_dataset", lambda: None)
-    monkeypatch.setattr(match_data, "_process_ror_orgs", lambda dataset: ror_orgs)
-    monkeypatch.setattr(match_data, "_process_ror_orgs_to_dict", lambda dataset: ror_orgs_dict)
+    monkeypatch.setattr(match_data, "get_ror_dataset", lambda: None)
+    monkeypatch.setattr(match_data, "process_ror_orgs", lambda dataset: ror_orgs)
+    monkeypatch.setattr(match_data, "process_ror_orgs_to_dict", lambda dataset: ror_orgs_dict)
     # threads instead of processes so the stubs above also apply inside the workers
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", concurrent.futures.ThreadPoolExecutor)
 

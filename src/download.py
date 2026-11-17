@@ -205,7 +205,7 @@ def run_kaggle(arxiv_api: ArxivAPI, kaggle_path: Path, arxiv_category: str) -> N
     util.configure_logger(_logger)
     to_skip = set(util.read_json(util.get_papers_dir(), util.SKIPPED_DL_FILE) or [])
     try:
-        with open(kaggle_path, "r") as f:
+        with open(kaggle_path) as f:
             # each line is a JSON object, 'jsonlines' format
             for line in f:
                 paper_metadata = _get_kaggle_metadata(line)

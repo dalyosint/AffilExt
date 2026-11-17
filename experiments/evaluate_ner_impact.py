@@ -1,17 +1,18 @@
-import pandas as pd
 import json
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 # Experiments live outside src/, so make the pipeline modules importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from approach1_spacy_ner import get_matched_affiliation_spacy
 import match_data
+from approach1_spacy_ner import get_matched_affiliation_spacy
 
 print("Loading ROR dataset...")
-ror_dataset = match_data._get_ror_dataset()
-ror_orgs = match_data._process_ror_orgs(ror_dataset)
+ror_dataset = match_data.get_ror_dataset()
+ror_orgs = match_data.process_ror_orgs(ror_dataset)
 
 # Load the 100 failed matches
 df = pd.read_parquet('first_100_failed_matches.parquet')
@@ -30,7 +31,8 @@ print("Evaluating 100 baseline failures against NER approach...\n")
 for index, row in df.iterrows():
     try:
         matched_info_str = row['matched_info']
-        if not matched_info_str: continue
+        if not matched_info_str:
+            continue
         matched_info = json.loads(matched_info_str)
 
         for author in matched_info.get('matched_authors', []):
@@ -38,7 +40,9 @@ for index, row in df.iterrows():
                 raw_string = aff.get('ext_name', '')
                 baseline_score = aff.get('score', 0.0)  # The original failing score
 
-                if not raw_string: continue
+                if not raw_string:
+
+                    continue
 
                 # Run the new NER approach
                 _, (ror_id, ner_score) = get_matched_affiliation_spacy(raw_string, ror_orgs)

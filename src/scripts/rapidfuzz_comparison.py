@@ -4,7 +4,7 @@ Compare the different ratios that the RapidFuzz library offers for fuzzy string 
 import random
 import timeit
 
-from rapidfuzz import fuzz, utils, process
+from rapidfuzz import fuzz, process, utils
 
 import threaded_run
 import util
@@ -90,7 +90,7 @@ def _run_time_test_scorer(affiliations: set[str], ror_orgs: list[str], scorer: c
 def _run_time_test(affiliations: set[str], ror_orgs: list[str]):
     times = []
     for scorer in _SCORERS:
-        t = timeit.timeit(lambda: _run_time_test_scorer(affiliations, ror_orgs, scorer[1]), number=_RUNS)
+        t = timeit.timeit(lambda s=scorer[1]: _run_time_test_scorer(affiliations, ror_orgs, s), number=_RUNS)
         times.append(t)
         print(f"{scorer[0]}: {t} secs")
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import regex
 
 import util
-from definition import reg_exp, latex
+from definition import latex, reg_exp
 
 
 def _find_commands(cmds, text):

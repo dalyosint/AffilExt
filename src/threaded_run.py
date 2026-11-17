@@ -1,7 +1,7 @@
 import itertools
 import multiprocessing
 import typing
-from multiprocessing import Queue, Process, cpu_count
+from multiprocessing import Process, Queue, cpu_count
 
 import threaded_log
 
