@@ -85,3 +85,45 @@ def test_batches_with_all_null_results_can_be_merged(tmp_path):
 
     merged = pl.scan_parquet(tmp_path / "*.parquet").collect()
     assert merged.height == 4
+
+
+def test_main_end_to_end_with_resume(pipeline, fake_ror, monkeypatch, tmp_path):
+    """Runs main() on a small Parquet file twice: the second run must skip everything (resume)."""
+    import concurrent.futures
+    import json
+    import sys
+
+    import match_data
+
+    ror_orgs, ror_orgs_dict = fake_ror
+    monkeypatch.setattr(match_data, "_get_ror_dataset", lambda: None)
+    monkeypatch.setattr(match_data, "_process_ror_orgs", lambda dataset: ror_orgs)
+    monkeypatch.setattr(match_data, "_process_ror_orgs_to_dict", lambda dataset: ror_orgs_dict)
+    # threads instead of processes so the stubs above also apply inside the workers
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", concurrent.futures.ThreadPoolExecutor)
+
+    input_file = tmp_path / "in.parquet"
+    output_file = tmp_path / "out.parquet"
+    pl.DataFrame([row("good", GOOD_TEX), row("bad", NO_AUTHOR_TEX)]).write_parquet(input_file)
+    argv = ["pipeline_parquet.py", "-i", str(input_file), "-o", str(output_file),
+            "--batch-dir", str(tmp_path / "batches"), "-w", "1", "-b", "1"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    pp.main()
+
+    out = pl.read_parquet(output_file).sort("id")
+    assert out["id"].to_list() == ["bad", "good"]
+    assert out.filter(pl.col("id") == "good")["matched_info"][0] is not None
+    assert out.filter(pl.col("id") == "bad")["matched_info"][0] is None
+
+    summary = json.loads((tmp_path / "out.run_summary.json").read_text())
+    assert summary["papers"]["processed_this_run"] == 2
+    assert summary["papers"]["by_status"] == {"extraction_failed": 1, "success": 1}
+    assert summary["llm_fallback"]["pushed"] == 1
+    assert summary["settings"]["author_f1_threshold"] == pp.AUTHOR_F1_THRESHOLD
+
+    pp.main()  # resume: nothing left to do
+    summary = json.loads((tmp_path / "out.run_summary.json").read_text())
+    assert summary["papers"]["processed_this_run"] == 0
+    assert summary["papers"]["skipped_already_processed"] == 2
+    assert pl.read_parquet(output_file).height == 2
