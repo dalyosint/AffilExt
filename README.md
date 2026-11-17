@@ -93,3 +93,17 @@ Data is stored under `data/` (papers, ROR dataset, stats).
 ```bash
 python graph_analysis.py math_sample_processed_final.parquet
 ```
+
+## 🙏 Based On
+
+This project builds on the original **AffilExt** by [Frylen](https://github.com/Frylen) (initial version, December 2024),
+which provided the file-based pipeline: arXiv/Kaggle download (`main.py`, `download.py`, `ArxivAPI.py`),
+the rule-based LaTeX command extraction and parsing schemes (`extract_cmds.py`, `extract_author_aff.py`, `definition/`),
+ROR matching (`match_data.py`, `ror_dl.py`) and the analysis tools in `src/scripts/`.
+
+Developed in this bachelor thesis on top of that base:
+- Scalable Parquet pipeline with multiprocessing and crash-resumable checkpoints (`pipeline_parquet.py`)
+- Quality gate on author similarity and selective LLM fallback via Ollama (`ai_fallback.py`, `llm_extraction.py`, `author_matching.py`)
+- spaCy NER–assisted ROR matching (`approach1_spacy_ner.py`)
+- Institution collaboration graph and community detection (`graph_analysis.py`)
+- LLM, prompt, temperature and threshold experiments (`experiments/`)
