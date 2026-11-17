@@ -1,28 +1,23 @@
 import logging
 import typing
+import unicodedata
 from pathlib import Path
 
-import unicodedata
-from rapidfuzz import process, fuzz, utils
+from rapidfuzz import fuzz, process, utils
 
 import ror_dl
 import threaded_run
 import util
+
+# Added this new line:
+from definition.data.ArxivMetadata import ArxivMetadata
 from definition.data.Author import Author
 
 # Added ExtAuthorInfo to this line:
-from definition.data.ExtAuthorData import ExtResults, ExtAuthorInfo
-# Added this new line:
-from definition.data.ArxivMetadata import ArxivMetadata
-
-
-from definition.data.MatchedAuthorData import MatchedPaperData, MatchedAffiliationInfo, MatchedAuthorInfo
+from definition.data.ExtAuthorData import ExtAuthorInfo, ExtResults
+from definition.data.MatchedAuthorData import MatchedAffiliationInfo, MatchedAuthorInfo, MatchedPaperData
 from definition.data.RorDataset import RorDataset
 from extract_author_aff import get_author_matchings_by_name
-
-
-
-
 
 #from definition.data.ExtAuthorData import ExtResults
 #from definition.data.MatchedAuthorData import MatchedPaperData, MatchedAffiliationInfo, MatchedAuthorInfo
@@ -98,7 +93,7 @@ def _resolve_ror_id(matching_data: dict, args: tuple) -> None:
         util.write_obj_to_json(paper_dir, util.MATCHED_DATA_FILE, matched_paper_data)
 
 
-def _process_ror_orgs_to_dict(ror_dataset: RorDataset) -> dict:
+def process_ror_orgs_to_dict(ror_dataset: RorDataset) -> dict:
     ror_dict = {}
     for ror_org in ror_dataset.data:
         # use the ROR-ID as key and pass the object as value
@@ -107,7 +102,7 @@ def _process_ror_orgs_to_dict(ror_dataset: RorDataset) -> dict:
     return ror_dict
 
 
-def _get_best_match(matches: list[tuple[str, float, int]], affiliation: str) -> tuple[str, float, int]:
+def get_best_match(matches: list[tuple[str, float, int]], affiliation: str) -> tuple[str, float, int]:
     # get the best match using the ratio()-score. We do that as a score of partial_ratio() only scores
     # a substring inside affiliation. When there is a good substring match we want to check the whole
     # affiliation to assure longer strings do not have a disadvantage. E.g. "Techno" would have a
@@ -172,7 +167,7 @@ def _run_single_element(paper_dir: Path, args: tuple) -> dict | None:
 
     matched_affiliations: dict = args[0]  # {"extracted_aff" : {ror_id, score}, ...}
     arxiv_authors = arxiv_metadata.authors
-    best_extraction = _get_best_extraction(extractions)
+    best_extraction = get_best_extraction(extractions)
     ext_authors = best_extraction.authors
     matched_authors = _match_authors(arxiv_authors, ext_authors, matched_affiliations)
     return {
@@ -184,7 +179,7 @@ def _run_single_element(paper_dir: Path, args: tuple) -> dict | None:
 def _get_matched_affiliation(affiliation: str, args: tuple) -> tuple[str, tuple[str, float]]:
     research_orgs: list[tuple[str, str]] = args[0]
     org_names = [org[1] for org in research_orgs]
-    preprocessed_affiliation = _pre_process_string(affiliation)
+    preprocessed_affiliation = pre_process_string(affiliation)
     # extract the top 10 matches
     matches = process.extract(
         # we use partial ratio as we search for a substring inside the extracted affiliation
@@ -194,7 +189,7 @@ def _get_matched_affiliation(affiliation: str, args: tuple) -> tuple[str, tuple[
     )
 
     # best_match = (matched string, score of ratio(), index in research_orgs)
-    best_match = _get_best_match(matches, preprocessed_affiliation)
+    best_match = get_best_match(matches, preprocessed_affiliation)
     return affiliation, (research_orgs[best_match[2]][0], best_match[1])
 
 
@@ -216,7 +211,7 @@ def _match_affiliations(affiliations: set[str], ror_orgs: list[tuple[str, str]])
     return affs
 
 
-def _get_best_extraction(extractions: list[ExtResults]) -> ExtResults:
+def get_best_extraction(extractions: list[ExtResults]) -> ExtResults:
     if len(extractions) == 1:
         return extractions[0]
 
@@ -232,7 +227,7 @@ def _get_paper_affiliations(paper_dir: Path) -> set[str]:
     affs = set()
     ext_affs = util.read_json(paper_dir, util.EXTRACTED_DATA_FILE)
     if ext_affs and not util.file_exists(paper_dir, util.MATCHED_DATA_FILE):
-        ext = _get_best_extraction(ext_affs.extractions)
+        ext = get_best_extraction(ext_affs.extractions)
         for author in ext.authors:
             for affiliation in author.affiliations:
                 affs.add(affiliation)
@@ -251,25 +246,25 @@ def _get_extracted_affiliations(paper_dirs: list[Path]) -> set[str]:
     return unique_affiliations
 
 
-def _pre_process_string(string: str) -> str:
+def pre_process_string(string: str) -> str:
     # pre-process the name for rapidfuzz matching
     normalized_unicode = unicodedata.normalize('NFD', string)
     return utils.default_process(normalized_unicode)
 
 
-def _process_ror_orgs(ror_dataset: RorDataset) -> list[tuple[str, str]]:
+def process_ror_orgs(ror_dataset: RorDataset) -> list[tuple[str, str]]:
     ror_orgs = []
     for ror_org in ror_dataset.data:
         ror_id = ror_org.ror_id
         for name in ror_org.names:
-            processed_name = _pre_process_string(name)
+            processed_name = pre_process_string(name)
             if len(processed_name) > 0:  # ignore full unicode names (like cyrillic names)
                 ror_orgs.append((ror_id, processed_name))
 
     return ror_orgs
 
 
-def _get_ror_dataset() -> RorDataset:
+def get_ror_dataset() -> RorDataset:
     if not util.file_exists(util.get_ror_dir(), util.ROR_DATASET_FILE):
         _logger.warning("Did not find ROR dataset file! Downloading it now.")
         ror_dl.prepare_dataset()
@@ -284,14 +279,14 @@ def run(paper_dirs: list[Path]) -> None:
     """
     util.configure_logger(_logger)
     _logger.info("Preparing ROR dataset for Matching.")
-    ror_dataset = _get_ror_dataset()
-    ror_orgs = _process_ror_orgs(ror_dataset)
+    ror_dataset = get_ror_dataset()
+    ror_orgs = process_ror_orgs(ror_dataset)
     _logger.info("Matching extracted data. This might take a while!")
     extracted_affiliations = _get_extracted_affiliations(paper_dirs)
     matched_affiliations = _match_affiliations(extracted_affiliations, ror_orgs)
     matched_data = threaded_run.run_with_results(paper_dirs, _run_single_element, matched_affiliations)
     _logger.info("Preparing ROR dataset for assignments.")
-    ror_orgs_dict = _process_ror_orgs_to_dict(ror_dataset)
+    ror_orgs_dict = process_ror_orgs_to_dict(ror_dataset)
     _logger.info("Assigning ROR Organizations to extracted data.")
     threaded_run.run(matched_data, _resolve_ror_id, ror_orgs_dict)
 
@@ -308,7 +303,7 @@ def match_and_resolve_single_paper( arxiv_metadata: ArxivMetadata , ext_aff: Ext
         return None
 
     # 2. Get the best extraction result (authors and their raw affiliations)
-    best_extraction = _get_best_extraction(ext_aff.extractions)
+    best_extraction = get_best_extraction(ext_aff.extractions)
     ext_authors = best_extraction.authors
 
     # 3. Collect unique affiliations from this paper

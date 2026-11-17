@@ -2,6 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![Data](https://img.shields.io/badge/Data-Parquet-orange.svg)
+![tests](https://github.com/dalyosint/AffilExt/actions/workflows/tests.yml/badge.svg)
 
 ## 📌 Overview
 AffilExt is a high-performance data pipeline designed to extract complex author-affiliation metadata from unstructured LaTeX source files. Built to process the entire arXiv pre-print corpus, this system bridges the data availability gap by parsing terabytes of raw text into a structured, queryable knowledge graph.
@@ -43,6 +44,7 @@ src/
 └── scripts/                # Stats and manual-evaluation tools for the file-based pipeline (main.py)
 
 experiments/                # Research scripts used to pick the LLM, prompts and thresholds (see experiments/README.md)
+tests/                      # pytest suite
 ```
 
 ## ⚙️ Installation
@@ -78,6 +80,12 @@ Results are checkpointed into `processed_batches/` after every batch. If a run i
 rerun the same command and already processed papers are skipped. The final file adds the columns
 `extracted_info`, `matched_info` and `ai_output` (JSON strings). See `python pipeline_parquet.py -h` for all options.
 
+Every run also writes `<output>.run_summary.json` with the settings (thresholds, LLM model and prompt, window sizes,
+spaCy model), the git commit, the number of papers per status, LLM fallback counts and per-paper timings.
+
+`--spacy-skip-score N` skips spaCy NER for affiliations that already match a ROR name with a score of at least `N`.
+This is faster but can change results; by default spaCy always runs.
+
 ### Original file-based pipeline
 
 ```bash
@@ -87,6 +95,17 @@ python main.py extract                      # only re-run extraction on already 
 ```
 
 Data is stored under `data/` (papers, ROR dataset, stats).
+
+### Tests and linting
+
+```bash
+pip install -r requirements-dev.txt
+pytest          # spaCy and Ollama are stubbed, no models or data needed
+ruff check .
+```
+
+Both also run on GitHub Actions for every push. Known gaps of the rule-based parser are listed as `xfail`
+tests in `tests/test_rule_based_extraction.py`.
 
 ### Graph analysis
 

@@ -15,16 +15,22 @@ import argparse
 import concurrent.futures
 import json
 import logging
+import statistics
+import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jsonpickle
 import polars as pl
 import pyarrow.parquet as pq
+
 import ai_fallback
+import approach1_spacy_ner
 import author_matching
 import extract_author_aff
 import extract_cmds
+import llm_extraction
 import match_data
 from definition.data.ArxivMetadata import ArxivMetadata
 from definition.data.Author import Author
@@ -83,13 +89,14 @@ global_ror_orgs = None
 global_ror_orgs_dict = None
 
 
-def init_worker(log_level: int | str = logging.INFO) -> None:
-    """Runs once per worker process: configures logging and loads the ROR dataset."""
+def init_worker(log_level: int | str = logging.INFO, spacy_skip_score: float | None = None) -> None:
+    """Runs once per worker process: configures logging, matching settings and loads the ROR dataset."""
     global global_ror_orgs, global_ror_orgs_dict
     configure_logging(log_level)
-    ror_dataset = match_data._get_ror_dataset()
-    global_ror_orgs = match_data._process_ror_orgs(ror_dataset)
-    global_ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
+    approach1_spacy_ner.SPACY_SKIP_SCORE = spacy_skip_score
+    ror_dataset = match_data.get_ror_dataset()
+    global_ror_orgs = match_data.process_ror_orgs(ror_dataset)
+    global_ror_orgs_dict = match_data.process_ror_orgs_to_dict(ror_dataset)
 
 
 def process_single_paper(row: dict) -> tuple:
@@ -115,7 +122,7 @@ def process_single_paper(row: dict) -> tuple:
 
         if ext_info_trad and ext_info_trad.extractions:
             # Gate 1: author list similarity
-            best_ext = match_data._get_best_extraction(ext_info_trad.extractions)
+            best_ext = match_data.get_best_extraction(ext_info_trad.extractions)
             f1_score = author_matching.author_f1([a.name for a in best_ext.authors],
                                                  [a.name for a in meta_obj.authors])
 
@@ -211,9 +218,70 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="Number of worker processes. Default: %(default)s")
     parser.add_argument("-b", "--batch-size", type=int, default=1000,
                         help="Rows per checkpoint batch. Default: %(default)s")
+    parser.add_argument("--spacy-skip-score", type=float, default=None,
+                        help="Skip spaCy NER when the raw affiliation already matches a ROR name with at least this "
+                             "score (0-100). Faster, but can change results. Default: always use spaCy")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Default: %(default)s")
     return parser
+
+
+def _git_commit() -> str | None:
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              cwd=Path(__file__).parent, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _summarize_durations(durations: list[float]) -> dict:
+    if not durations:
+        return {}
+    ordered = sorted(durations)
+    return {
+        "mean": round(statistics.fmean(ordered), 3),
+        "median": round(statistics.median(ordered), 3),
+        "p95": round(ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))], 3),
+        "max": round(ordered[-1], 3),
+    }
+
+
+def build_run_summary(args: argparse.Namespace, status_counts: dict, ai_pushed: int, ai_failed: int,
+                      durations: list[float], skipped_already_processed: int, wall_seconds: float) -> dict:
+    """Everything needed to report and reproduce a run: settings, code version, outcome counts and timings."""
+    processed = sum(status_counts.values())
+    return {
+        "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "git_commit": _git_commit(),
+        "settings": {
+            "input": str(args.input),
+            "output": str(args.output),
+            "workers": args.workers,
+            "batch_size": args.batch_size,
+            "author_f1_threshold": AUTHOR_F1_THRESHOLD,
+            "name_similarity_threshold": author_matching.DEFAULT_NAME_THRESHOLD,
+            "name_similarity_method": author_matching.DEFAULT_METHOD,
+            "llm_model": llm_extraction.DEFAULT_MODEL,
+            "llm_prompt": next(k for k, v in llm_extraction.PROMPTS.items() if v is llm_extraction.DEFAULT_PROMPT),
+            "llm_window_chars": {"head": llm_extraction.DEFAULT_HEAD_CHARS, "tail": llm_extraction.DEFAULT_TAIL_CHARS},
+            "spacy_model": approach1_spacy_ner.SPACY_MODEL,
+            "spacy_skip_score": args.spacy_skip_score,
+        },
+        "papers": {
+            "processed_this_run": processed,
+            "skipped_already_processed": skipped_already_processed,
+            "by_status": dict(sorted(status_counts.items())),
+            "success_rate": round(status_counts.get("success", 0) / processed, 4) if processed else None,
+        },
+        "llm_fallback": {
+            "pushed": ai_pushed,
+            "failed": ai_failed,
+            "rescued": ai_pushed - ai_failed,
+            "share_of_papers": round(ai_pushed / processed, 4) if processed else None,
+        },
+        "seconds_per_paper": _summarize_durations(durations),
+        "wall_time_seconds": round(wall_seconds, 1),
+    }
 
 
 def main():
@@ -223,6 +291,7 @@ def main():
     input_file = Path(args.input)
     output_file = Path(args.output)
     batch_dir = Path(args.batch_dir)
+    summary_file = output_file.with_name(output_file.stem + ".run_summary.json")
 
     if not input_file.is_file():
         logger.error("Input file not found: %s", input_file)
@@ -233,11 +302,11 @@ def main():
     batch_dir.mkdir(parents=True, exist_ok=True)
     processed_ids = _load_processed_ids(batch_dir)
 
-    success_count = 0
-    extraction_failed_count = 0
-    matching_failed_count = 0
+    status_counts: dict[str, int] = {}
+    durations: list[float] = []
     ai_pushed_count = 0
     ai_failed_count = 0
+    skipped_count = 0
 
     logger.info("Processing %s with %d workers (ROR dataset is loaded once per worker)...",
                 input_file, args.workers)
@@ -246,14 +315,16 @@ def main():
     parquet_file = pq.ParquetFile(input_file)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, initializer=init_worker,
-                                                initargs=(args.log_level,)) as executor:
+                                                initargs=(args.log_level, args.spacy_skip_score)) as executor:
 
         for batch_counter, batch in enumerate(parquet_file.iter_batches(batch_size=args.batch_size), start=1):
             df_batch = pl.from_arrow(batch)
 
             # Skip papers that were already processed in a previous run
             if processed_ids:
+                rows_before = df_batch.height
                 df_batch = df_batch.filter(~pl.col("id").is_in(list(processed_ids)))
+                skipped_count += rows_before - df_batch.height
 
             if df_batch.height == 0:
                 logger.info("--- Skipping batch %d (all rows already processed) ---", batch_counter)
@@ -267,33 +338,24 @@ def main():
             extracted_results_column = []
             matched_results_column = []
             ai_results_column = []
-
-            batch_success = 0
-            batch_match_fail = 0
-            batch_ext_fail = 0
+            batch_status: dict[str, int] = {}
             batch_ai_pushed = 0
             batch_ai_failed = 0
 
-            for ext_res, match_res, ai_res, status, _duration, ai_used in results:
+            for ext_res, match_res, ai_res, status, duration, ai_used in results:
                 extracted_results_column.append(ext_res)
                 matched_results_column.append(match_res)
                 ai_results_column.append(ai_res)
-
-                if status == "success":
-                    batch_success += 1
-                elif status == "matching_failed":
-                    batch_match_fail += 1
-                else:
-                    batch_ext_fail += 1
+                durations.append(duration)
+                batch_status[status] = batch_status.get(status, 0) + 1
 
                 if ai_used:
                     batch_ai_pushed += 1
                     if status != "success":
                         batch_ai_failed += 1
 
-            success_count += batch_success
-            matching_failed_count += batch_match_fail
-            extraction_failed_count += batch_ext_fail
+            for status, count in batch_status.items():
+                status_counts[status] = status_counts.get(status, 0) + count
             ai_pushed_count += batch_ai_pushed
             ai_failed_count += batch_ai_failed
 
@@ -308,10 +370,12 @@ def main():
             df_batch.write_parquet(batch_filename)
             logger.info("Saved checkpoint: %s", batch_filename)
 
+            batch_success = batch_status.get("success", 0)
+            batch_match_fail = batch_status.get("matching_failed", 0)
             logger.info("Finished batch %d. Stats: %d Success | %d Match Fail | %d Ext Fail | "
                         "AI Pushed: %d | AI Failed: %d",
-                        batch_counter, batch_success, batch_match_fail, batch_ext_fail,
-                        batch_ai_pushed, batch_ai_failed)
+                        batch_counter, batch_success, batch_match_fail,
+                        len(results) - batch_success - batch_match_fail, batch_ai_pushed, batch_ai_failed)
 
     logger.info("Processing time: %.2f minutes", (time.time() - processing_start_time) / 60)
 
@@ -323,12 +387,16 @@ def main():
     except Exception as e:
         logger.error("Failed to compile final file: %s. The batches are still safe in '%s'.", e, batch_dir)
 
+    summary = build_run_summary(args, status_counts, ai_pushed_count, ai_failed_count, durations,
+                                skipped_count, time.time() - total_start_time)
+    summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
     logger.info("=== PIPELINE COMPLETION STATS (this run) ===")
-    logger.info("Total processed papers: %d", success_count + matching_failed_count + extraction_failed_count)
-    logger.info("Total successful (rule-based + AI): %d", success_count)
-    logger.info("Total pushed to AI: %d", ai_pushed_count)
-    logger.info("Total failed by AI: %d", ai_failed_count)
-    logger.info("Total pipeline time: %.2f seconds", time.time() - total_start_time)
+    logger.info("Processed papers: %d (by status: %s)", summary["papers"]["processed_this_run"],
+                summary["papers"]["by_status"])
+    logger.info("Pushed to AI: %d | failed by AI: %d", ai_pushed_count, ai_failed_count)
+    logger.info("Total pipeline time: %.2f seconds", summary["wall_time_seconds"])
+    logger.info("Run summary written to %s", summary_file)
     logger.info("=================================")
 
 

@@ -1,5 +1,4 @@
 """LLM fallback for papers where rule-based extraction fails (used by pipeline_parquet.py)."""
-import asyncio
 import logging
 
 from pydantic import ValidationError
@@ -23,7 +22,7 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = llm
     try:
         parsed_data = llm_extraction.query_ollama(prompt, model_name, temperature=0.0,
                                                   timeout_seconds=timeout_seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _logger.error("Timeout: model %s took over %ss for %s. Skipping.", model_name, timeout_seconds, arxiv_id)
         return None
     except ValidationError as ve:

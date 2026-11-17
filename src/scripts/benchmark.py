@@ -3,8 +3,8 @@ Benchmark parts of the program
 """
 import random
 import timeit
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import extract_author_aff
 import extract_cmds

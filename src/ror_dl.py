@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 
 import util
-from definition.data.RorDataset import ResearchLocation, RorDataset, ResearchOrganization
+from definition.data.RorDataset import ResearchLocation, ResearchOrganization, RorDataset
 
 _RECORD_LIST_URL = "https://zenodo.org/api/communities/ror-data/records?q=&sort=newest"
 _MAX_RETRIES = 10

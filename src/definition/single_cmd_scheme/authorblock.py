@@ -1,7 +1,6 @@
 import regex
 
-from definition import latex
-from definition import reg_exp
+from definition import latex, reg_exp
 from definition.data.Author import Author
 from definition.data.SingleCmdScheme import SingleCmdScheme
 from definition.single_cmd_scheme import cmd_util

@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from rapidfuzz import utils, process
+from rapidfuzz import process, utils
 from rapidfuzz.distance import Indel
 
 import threaded_run
@@ -12,8 +12,10 @@ from definition.data.ExtAuthorData import ExtAuthorInfo, ExtResults
 from definition.data.ExtCmdData import ExtCmdData, LatexCmd
 from definition.data.MultiCmdScheme import MultiCmdScheme
 from definition.data.SingleCmdScheme import SingleCmdScheme
+
 # noinspection PyUnresolvedReferences
 from definition.multi_cmd_scheme import *
+
 # noinspection PyUnresolvedReferences
 from definition.single_cmd_scheme import *  # import all schemes, the comment above prevents PyCharm from removing this
 from definition.single_cmd_scheme import cmd_util

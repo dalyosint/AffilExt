@@ -2,10 +2,11 @@
 
 Results are appended to a JSONL file after every run so the experiment can be resumed after a crash.
 """
-import asyncio
+import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,7 +45,7 @@ def extract_with_ollama_experiment(text_input, model_name, prompt_template, temp
         parsed_data = llm_extraction.query_ollama(prompt, model_name, temperature=temp,
                                                   timeout_seconds=timeout_seconds)
         return parsed_data, True, None
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("TIMEOUT: %s did not respond within %ss. Skipping.", model_name, timeout_seconds)
         return None, False, f"Timeout: model failed to respond within {timeout_seconds} seconds."
     except ValidationError:
@@ -95,7 +96,7 @@ def _load_processed_configs(jsonl_file: str) -> set:
     if not os.path.exists(jsonl_file):
         return processed_configs
 
-    with open(jsonl_file, 'r', encoding='utf-8') as f:
+    with open(jsonl_file, encoding='utf-8') as f:
         for line in f:
             try:
                 record = json.loads(line)
@@ -109,21 +110,56 @@ def _load_processed_configs(jsonl_file: str) -> set:
     return processed_configs
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Benchmark LLMs, prompts and temperatures for the LLM fallback.")
+    parser.add_argument("-i", "--input", default="math_500.parquet", help="Default: %(default)s")
+    parser.add_argument("-n", "--limit", type=int, default=500, help="Number of papers. Default: %(default)s")
+    parser.add_argument("--models", nargs="+", default=MODELS, help="Default: %(default)s")
+    parser.add_argument("--prompts", nargs="+", default=list(PROMPTS), choices=list(PROMPTS), help="Default: all")
+    parser.add_argument("--temperatures", nargs="+", type=float, default=TEMPERATURES, help="Default: %(default)s")
+    parser.add_argument("--timeout", type=float, default=TIMEOUT_SECONDS, help="Seconds per LLM call. Default: %(default)s")
+    parser.add_argument("--head-chars", type=int, default=HEAD_CHARS, help="Default: %(default)s")
+    parser.add_argument("--tail-chars", type=int, default=TAIL_CHARS, help="Default: %(default)s")
+    parser.add_argument("--results", default="ai_experiment_results.jsonl",
+                        help="Append-only results file; existing runs in it are skipped (resume). Default: %(default)s")
+    parser.add_argument("--final-json", default="ai_experiment_results_final.json", help="Default: %(default)s")
+    return parser.parse_args()
+
+
+def _git_commit() -> str | None:
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              cwd=Path(__file__).parent, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _read_all_records(jsonl_file: str) -> list[dict]:
+    records = []
+    with open(jsonl_file, encoding="utf-8") as f:
+        for line in f:
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
 def main():
-    INPUT_FILE = "math_500.parquet"
-    OUTPUT_JSONL = "ai_experiment_results.jsonl"
-    OUTPUT_JSON = "ai_experiment_results_final.json"
-    TEST_LIMIT = 500
+    args = _parse_args()
 
-    processed_configs = _load_processed_configs(OUTPUT_JSONL)
+    processed_configs = _load_processed_configs(args.results)
 
-    logger.info("Loading %s...", INPUT_FILE)
-    test_rows = pl.read_parquet(INPUT_FILE).to_dicts()[:TEST_LIMIT]
+    # Record how this experiment was run, next to the results
+    config_file = Path(args.results).with_suffix(".config.json")
+    config_file.write_text(json.dumps({**vars(args), "git_commit": _git_commit()}, indent=2), encoding="utf-8")
+
+    logger.info("Loading %s...", args.input)
+    test_rows = pl.read_parquet(args.input).to_dicts()[:args.limit]
     logger.info("Starting experiment on %d papers. Total configurations per paper: %d",
-                len(test_rows), len(MODELS) * len(PROMPTS) * len(TEMPERATURES))
+                len(test_rows), len(args.models) * len(args.prompts) * len(args.temperatures))
 
-    experiment_results = []
-    with open(OUTPUT_JSONL, "a", encoding="utf-8") as f:
+    with open(args.results, "a", encoding="utf-8") as f:
         for row in test_rows:
             paper_id = row.get('id', 'Unknown')
             logger.info("--- Processing Paper %s ---", paper_id)
@@ -145,12 +181,13 @@ def main():
 
             rule_based_metrics = calculate_metrics_robust(rule_based_authors_output, ground_truth_authors)
 
-            preamble = llm_extraction.get_latex_metadata_windows(full_latex, HEAD_CHARS, TAIL_CHARS)
+            preamble = llm_extraction.get_latex_metadata_windows(full_latex, args.head_chars, args.tail_chars)
 
             # 2. Experiment matrix
-            for model in MODELS:
-                for prompt_name, prompt_template in PROMPTS.items():
-                    for temp in TEMPERATURES:
+            for model in args.models:
+                for prompt_name in args.prompts:
+                    prompt_template = PROMPTS[prompt_name]
+                    for temp in args.temperatures:
                         config_key = _config_key(paper_id, model, prompt_name, temp)
                         if config_key in processed_configs:
                             logger.info("Skipping %s - already processed.", config_key)
@@ -160,7 +197,7 @@ def main():
 
                         start_time = time.time()
                         parsed_data, is_valid, error_msg = extract_with_ollama_experiment(
-                            preamble, model, prompt_template, temp
+                            preamble, model, prompt_template, temp, args.timeout
                         )
                         duration = round(time.time() - start_time, 2)
 
@@ -190,19 +227,18 @@ def main():
                             "ai_output": ai_output_authors,
                             "error_msg": error_msg,
                         }
-                        experiment_results.append(record)
 
                         # Write and flush immediately so a crash loses at most one run
                         f.write(json.dumps(record, ensure_ascii=False) + "\n")
                         f.flush()
                         os.fsync(f.fileno())
 
-    # Compiled JSON of this run's records once everything finished
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f_final:
-        json.dump(experiment_results, f_final, indent=4, ensure_ascii=False)
+    # Compile ALL records (including runs from earlier, resumed sessions) and evaluate them
+    with open(args.final_json, "w", encoding="utf-8") as f_final:
+        json.dump(_read_all_records(args.results), f_final, indent=4, ensure_ascii=False)
 
-    logger.info("Experiment complete! Results saved to %s", OUTPUT_JSON)
-    evaluate_experiment(OUTPUT_JSON)
+    logger.info("Experiment complete! Results saved to %s", args.final_json)
+    evaluate_experiment(args.final_json)
 
 
 if __name__ == "__main__":

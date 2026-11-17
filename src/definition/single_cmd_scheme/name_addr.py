@@ -57,7 +57,7 @@ class NameAddrTextSuperScript(SingleCmdScheme):
         if r"\address" in cmd_content:
             return False
 
-        if not r"\textsuperscript" in cmd_content:
+        if r"\textsuperscript" not in cmd_content:
             return False
 
         return r"\name" in cmd_content and r"\addr" in cmd_content

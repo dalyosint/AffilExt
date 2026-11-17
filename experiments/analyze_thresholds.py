@@ -1,9 +1,10 @@
 import json
-import polars as pl
-from rapidfuzz import fuzz
-import pandas as pd
 import sys
 from pathlib import Path
+
+import pandas as pd
+import polars as pl
+from rapidfuzz import fuzz
 
 # Experiments live outside src/, so make the pipeline modules importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -15,7 +16,7 @@ from pipeline_parquet import parse_metadata
 def main():
     print("Loading data...")
     # Load AI outputs
-    with open('QwenT0.json', 'r', encoding='utf-8') as f:
+    with open('QwenT0.json', encoding='utf-8') as f:
         ai_results = json.load(f)
 
     # Load Ground Truth from Parquet

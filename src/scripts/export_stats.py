@@ -1,9 +1,10 @@
 import itertools
 import logging
 import math
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Collection, Any
+from typing import Any
 
 import adjustText
 import matplotlib.pyplot as plt
@@ -16,7 +17,7 @@ import util
 from definition.data.ArxivMetadata import ArxivMetadata
 from definition.data.ExtAuthorData import ExtAuthorInfo, ExtResults
 from definition.data.ExtCmdData import ExtCmdData
-from definition.data.MatchedAuthorData import MatchedPaperData, MatchedAuthorInfo
+from definition.data.MatchedAuthorData import MatchedAuthorInfo, MatchedPaperData
 from definition.data.RorDataset import ResearchOrganization
 from definition.single_cmd_scheme import cmd_util
 from scripts import arxiv_affiliations
