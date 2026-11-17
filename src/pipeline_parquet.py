@@ -1,49 +1,65 @@
+"""Hybrid extraction pipeline over a Parquet file of arXiv papers.
+
+Each input row needs the columns ``id``, ``text`` (full LaTeX source) and ``metadata``
+(arXiv/Kaggle metadata JSON). For every paper:
+
+1. Rule-based extraction of authors and affiliations from the LaTeX commands.
+2. Gate 1: the extracted authors must match the arXiv author list (hybrid fuzzy F1).
+3. Gate 2: the affiliations must resolve to ROR organizations.
+4. If either gate fails, fall back to the LLM (Ollama) and try matching again.
+
+Results are written as checkpoint batches so an interrupted run can be resumed,
+then merged into a single output Parquet file.
+"""
+import argparse
+import concurrent.futures
 import json
 import logging
+import time
 from pathlib import Path
-# Used to convert Python objects → string
+
 import jsonpickle
-import ai_fallback
-import os
-import glob
-# new approach
 import polars as pl
 import pyarrow.parquet as pq
-import pyarrow as pa
+from rapidfuzz import fuzz
 
-import time
-import matplotlib.pyplot as plt
-# Multiprocessing
-import concurrent.futures
-# Used to pass extra parameters to multiprocessing
-from functools import partial
-
-import extract_cmds
+import ai_fallback
 import extract_author_aff
+import extract_cmds
 import match_data
-import ror_dl
-import util
 from definition.data.ArxivMetadata import ArxivMetadata
 from definition.data.Author import Author
 
-# you can see which cpu worker is working
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - [%(processName)s] - %(levelname)s - %(message)s')
 logger = logging.getLogger("ParquetPipeline")
 
+# Gate 1: minimum per-name similarity (0-100) and minimum author-list F1 (0-1)
+NAME_SIMILARITY_THRESHOLD = 70
+AUTHOR_F1_THRESHOLD = 0.70
+SLOW_PAPER_SECONDS = 15.0
 
-# json_str: str , arxiv_id: str  = input
-# ArxivMetadata: output
-# reads arXiv metadata JSON and output it to ArxivMetadata
-def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata:
+# Statuses that trigger the LLM fallback
+_AI_FALLBACK_STATUSES = {"extraction_failed", "low_author_similarity", "matching_failed"}
+
+# Output columns are always strings (JSON). An explicit dtype keeps all batch files on the
+# same schema even when a batch contains only None values, so they can be merged later.
+_RESULT_DTYPE = pl.String
+
+_LOG_FORMAT = "%(asctime)s - [%(processName)s] - %(levelname)s - %(message)s"
+
+
+def configure_logging(level: int | str) -> None:
+    # force=True so worker processes (spawned on macOS/Windows) are configured too
+    logging.basicConfig(level=level, format=_LOG_FORMAT, force=True)
+
+
+def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata | None:
+    """Converts the raw arXiv metadata JSON string into an ArxivMetadata object."""
     try:
-        # converts str to dic
         data = json.loads(json_str)
 
-        authors_list = []
-        if 'authors_parsed' in data:
-            for auth in data['authors_parsed']:
-                name = f"{auth[1]} {auth[0]}".strip()
-                authors_list.append(Author(name, []))
+        if "authors_parsed" in data:
+            # authors_parsed entries are [last_name, first_name, suffix]
+            authors_list = [Author(f"{auth[1]} {auth[0]}".strip(), []) for auth in data["authors_parsed"]]
         else:
             authors_list = [Author("Unknown", [])]
 
@@ -60,27 +76,26 @@ def parse_metadata(json_str: str, arxiv_id: str) -> ArxivMetadata:
             authors=authors_list
         )
     except Exception as e:
-        logger.warning(f"Metadata parsing issue for {arxiv_id}: {e}")
+        logger.warning("Metadata parsing issue for %s: %s", arxiv_id, e)
         return None
 
 
+# Loaded once per worker process by init_worker()
 global_ror_orgs = None
 global_ror_orgs_dict = None
 
 
-def init_worker():
-    """This runs once per CPU core to load the dataset exactly once per process."""
+def init_worker(log_level: int | str = logging.INFO) -> None:
+    """Runs once per worker process: configures logging and loads the ROR dataset."""
     global global_ror_orgs, global_ror_orgs_dict
-    import match_data
+    configure_logging(log_level)
     ror_dataset = match_data._get_ror_dataset()
     global_ror_orgs = match_data._process_ror_orgs(ror_dataset)
     global_ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
 
 
-from rapidfuzz import fuzz
-
-
-def calculate_hybrid_f1(extracted_authors, ground_truth_authors, threshold=70):
+def calculate_hybrid_f1(extracted_authors, ground_truth_authors, threshold=NAME_SIMILARITY_THRESHOLD) -> float:
+    """F1 between two author lists; names match if max(ratio, token_set_ratio) >= threshold."""
     if not extracted_authors and not ground_truth_authors:
         return 1.0
     if not extracted_authors:
@@ -99,10 +114,7 @@ def calculate_hybrid_f1(extracted_authors, ground_truth_authors, threshold=70):
                 continue
 
             t_name = gt_author.name.lower().strip()
-
-            r_score = fuzz.ratio(e_name, t_name)
-            t_score = fuzz.token_set_ratio(e_name, t_name)
-            score = max(r_score, t_score)
+            score = max(fuzz.ratio(e_name, t_name), fuzz.token_set_ratio(e_name, t_name))
 
             if score > best_score:
                 best_score = score
@@ -120,12 +132,12 @@ def calculate_hybrid_f1(extracted_authors, ground_truth_authors, threshold=70):
     return 0.0
 
 
-def process_single_paper(row):
-    """Handles the processing for a single row to be run in a separate process."""
+def process_single_paper(row: dict) -> tuple:
+    """Processes one paper row. Runs inside a worker process."""
     paper_start_time = time.perf_counter()
-    paper_id = row.get('id', 'Unknown')
+    paper_id = row.get("id", "Unknown")
 
-    logger.debug(f"[{paper_id}] Starting processing...")
+    logger.debug("[%s] Starting processing...", paper_id)
 
     extracted_result = None
     matched_result = None
@@ -134,26 +146,23 @@ def process_single_paper(row):
     ai_used = False
 
     try:
-        full_latex_text = row['text']
-        metadata_raw = row['metadata']
-
-        logger.debug(f"[{paper_id}] Parsing metadata...")
-        meta_obj = parse_metadata(metadata_raw, paper_id)
+        full_latex_text = row["text"]
+        meta_obj = parse_metadata(row["metadata"], paper_id)
         ext_cmds = extract_cmds.extract_cmds_from_string(full_latex_text)
 
-        # --- 1. Try Rule-Based (Traditional) Extraction First ---
+        # --- 1. Rule-based extraction ---
         ext_info_trad = extract_author_aff.extract_affiliations_from_obj(ext_cmds, meta_obj)
 
         if ext_info_trad and ext_info_trad.extractions:
-            # 1.1 Gate 1: Check Author F1 Score
+            # Gate 1: author list similarity
             best_ext = match_data._get_best_extraction(ext_info_trad.extractions)
-            f1_score = calculate_hybrid_f1(best_ext.authors, meta_obj.authors, threshold=70)
+            f1_score = calculate_hybrid_f1(best_ext.authors, meta_obj.authors)
 
-            if f1_score >= 0.70:
-                logger.debug(f"[{paper_id}] Traditional extraction SUCCESS (F1: {f1_score:.2f}).")
+            if f1_score >= AUTHOR_F1_THRESHOLD:
+                logger.debug("[%s] Rule-based extraction SUCCESS (F1: %.2f).", paper_id, f1_score)
                 extracted_result = jsonpickle.encode(ext_info_trad)
 
-                # 1.2 Gate 2: Check ROR Match Resolution
+                # Gate 2: ROR match resolution
                 final_data = match_data.match_and_resolve_single_paper(
                     meta_obj, ext_info_trad, global_ror_orgs, global_ror_orgs_dict
                 )
@@ -161,30 +170,29 @@ def process_single_paper(row):
                 if final_data:
                     matched_result = jsonpickle.encode(final_data)
                     status = "success"
-                    logger.debug(f"[{paper_id}] Traditional Match SUCCESS.")
+                    logger.debug("[%s] Rule-based match SUCCESS.", paper_id)
                 else:
                     status = "matching_failed"
-                    logger.debug(f"[{paper_id}] Traditional Match FAILED (Unmatched institutions).")
+                    logger.debug("[%s] Rule-based match FAILED (unmatched institutions).", paper_id)
             else:
-                logger.debug(
-                    f"[{paper_id}] Traditional extraction FAILED (Low author similarity: {f1_score:.2f} < 0.70).")
                 status = "low_author_similarity"
+                logger.debug("[%s] Rule-based extraction FAILED (author F1 %.2f < %.2f).",
+                             paper_id, f1_score, AUTHOR_F1_THRESHOLD)
         else:
-            logger.debug(f"[{paper_id}] Traditional extraction FAILED (Empty extraction).")
             status = "extraction_failed"
+            logger.debug("[%s] Rule-based extraction FAILED (empty extraction).", paper_id)
 
-        # --- 2. AI Fallback (Only if extraction or matching failed) ---
-        if status in ["extraction_failed", "low_author_similarity", "matching_failed"]:
+        # --- 2. LLM fallback ---
+        if status in _AI_FALLBACK_STATUSES:
             ai_used = True
-            logger.info(f"Rule-based failed for {paper_id}. Falling back to AI extraction...")
+            logger.info("[%s] Rule-based failed (%s). Falling back to AI extraction...", paper_id, status)
             ext_info_ai = ai_fallback.extract_with_ollama(full_latex_text, meta_obj)
 
             if ext_info_ai:
                 ai_result = jsonpickle.encode(ext_info_ai)
-                extracted_result = ai_result  # Overwrite with AI's extraction payload
-                logger.debug(f"[{paper_id}] AI extraction SUCCESS.")
+                extracted_result = ai_result  # the AI extraction replaces the rule-based one
+                logger.debug("[%s] AI extraction SUCCESS.", paper_id)
 
-                # Attempt to match the AI extraction
                 final_data = match_data.match_and_resolve_single_paper(
                     meta_obj, ext_info_ai, global_ror_orgs, global_ror_orgs_dict
                 )
@@ -192,103 +200,108 @@ def process_single_paper(row):
                 if final_data:
                     matched_result = jsonpickle.encode(final_data)
                     status = "success"
-                    logger.debug(f"[{paper_id}] AI Match SUCCESS.")
+                    logger.debug("[%s] AI match SUCCESS.", paper_id)
                 else:
                     status = "matching_failed"
-                    logger.debug(f"[{paper_id}] AI Match FAILED.")
+                    logger.debug("[%s] AI match FAILED.", paper_id)
             else:
-                logger.debug(f"[{paper_id}] AI extraction FAILED/EMPTY.")
                 status = "extraction_failed"
+                logger.debug("[%s] AI extraction FAILED/EMPTY.", paper_id)
 
     except Exception as e:
-        logger.error(f"[{paper_id}] Failed processing paper: {e}", exc_info=True)
+        logger.error("[%s] Failed processing paper: %s", paper_id, e, exc_info=True)
         status = "pipeline_error"
 
-    paper_end_time = time.perf_counter()
-    duration = paper_end_time - paper_start_time
-
-    if duration > 15.0:
-        logger.warning(f"[{paper_id}] SLOW PROCESSING: Took {duration:.2f} seconds")
+    duration = time.perf_counter() - paper_start_time
+    if duration > SLOW_PAPER_SECONDS:
+        logger.warning("[%s] SLOW PROCESSING: took %.2f seconds", paper_id, duration)
 
     return extracted_result, matched_result, ai_result, status, duration, ai_used
 
 
-def main():
-    INPUT_FILE = "math_subset.parquet"
-    OUTPUT_DIR = "processed_batches"  # We use a directory now instead of a single file
-    FINAL_OUTPUT_FILE = "math_sample_processed_final.parquet"
+def _load_processed_ids(output_dir: Path) -> set:
+    """Collects the IDs of all papers already written to checkpoint batches (for resuming)."""
+    processed_ids = set()
+    existing_files = list(output_dir.glob("*.parquet"))
+    if not existing_files:
+        return processed_ids
 
-    # start time
+    logger.info("Found %d existing batch files. Loading to resume...", len(existing_files))
+    for file in existing_files:
+        try:
+            # only read the 'id' column to save RAM
+            processed_ids.update(pl.read_parquet(file, columns=["id"])["id"].to_list())
+        except Exception as e:
+            logger.warning("Could not read %s, it might be corrupted from a previous crash: %s", file, e)
+
+    logger.info("Resuming pipeline. Found %d already completed papers.", len(processed_ids))
+    return processed_ids
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Hybrid (rule-based + LLM) author-affiliation extraction over a Parquet file.")
+    parser.add_argument("-i", "--input", default="math_subset.parquet",
+                        help="Input Parquet file with columns id, text, metadata. Default: %(default)s")
+    parser.add_argument("-o", "--output", default="math_sample_processed_final.parquet",
+                        help="Final merged output Parquet file. Default: %(default)s")
+    parser.add_argument("--batch-dir", default="processed_batches",
+                        help="Directory for checkpoint batches (used for resuming). Default: %(default)s")
+    parser.add_argument("-w", "--workers", type=int, default=4,
+                        help="Number of worker processes. Default: %(default)s")
+    parser.add_argument("-b", "--batch-size", type=int, default=1000,
+                        help="Rows per checkpoint batch. Default: %(default)s")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Default: %(default)s")
+    return parser
+
+
+def main():
+    args = _build_arg_parser().parse_args()
+    configure_logging(args.log_level)
+
+    input_file = Path(args.input)
+    output_file = Path(args.output)
+    batch_dir = Path(args.batch_dir)
+
+    if not input_file.is_file():
+        logger.error("Input file not found: %s", input_file)
+        return
+
     total_start_time = time.time()
 
-    # --- 1. CRASH RESILIENCE: Create directory and load processed IDs ---
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    processed_ids = set()
-
-    # Look for any existing batch files in the folder to resume from
-    existing_files = glob.glob(os.path.join(OUTPUT_DIR, "*.parquet"))
-    if existing_files:
-        logger.info(f"Found {len(existing_files)} existing batch files. Loading to resume...")
-        # We only read the 'id' column to save RAM!
-        for file in existing_files:
-            try:
-                existing_df = pl.read_parquet(file, columns=["id"])
-                processed_ids.update(existing_df["id"].to_list())
-            except Exception as e:
-                logger.warning(f"Could not read {file}, it might be corrupted from a previous crash: {e}")
-
-        logger.info(f"Resuming pipeline. Found {len(processed_ids)} already completed papers.")
-    # --------------------------------------------------------------------
-
-    logger.info("Step 1: Loading ROR Dataset...")
-    ror_dataset = match_data._get_ror_dataset()
-    ror_orgs = match_data._process_ror_orgs(ror_dataset)
-    ror_orgs_dict = match_data._process_ror_orgs_to_dict(ror_dataset)
-
-    logger.info(f"Step 2: Preparing to stream Input Parquet {INPUT_FILE}...")
-
-    worker_func = partial(process_single_paper, ror_orgs=ror_orgs, ror_orgs_dict=ror_orgs_dict)
-
-    MAX_CORES = 4
-    BATCH_SIZE = 1000
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    processed_ids = _load_processed_ids(batch_dir)
 
     success_count = 0
     extraction_failed_count = 0
     matching_failed_count = 0
     ai_pushed_count = 0
     ai_failed_count = 0
-    paper_processing_times = []
 
-    logger.info("Step 3: Processing papers in streams with Multiprocessing...")
+    logger.info("Processing %s with %d workers (ROR dataset is loaded once per worker)...",
+                input_file, args.workers)
     processing_start_time = time.time()
 
-    parquet_file = pq.ParquetFile(INPUT_FILE)
-    batch_counter = 1
+    parquet_file = pq.ParquetFile(input_file)
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_CORES, initializer=init_worker) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, initializer=init_worker,
+                                                initargs=(args.log_level,)) as executor:
 
-        for batch in parquet_file.iter_batches(batch_size=BATCH_SIZE):
+        for batch_counter, batch in enumerate(parquet_file.iter_batches(batch_size=args.batch_size), start=1):
             df_batch = pl.from_arrow(batch)
 
-            # --- 2. FILTER: Skip papers we already processed ---
+            # Skip papers that were already processed in a previous run
             if processed_ids:
                 df_batch = df_batch.filter(~pl.col("id").is_in(list(processed_ids)))
 
             if df_batch.height == 0:
-                logger.info(f"--- Skipping Batch {batch_counter} (All rows already processed) ---")
-                batch_counter += 1
+                logger.info("--- Skipping batch %d (all rows already processed) ---", batch_counter)
                 continue
-            # ---------------------------------------------------
 
-            logger.info(f"--- Starting Batch {batch_counter} ({df_batch.height} new rows) ---")
+            logger.info("--- Starting batch %d (%d new rows) ---", batch_counter, df_batch.height)
             rows = df_batch.to_dicts()
-
-            # Execute the batch in parallel
-
             results = list(executor.map(process_single_paper, rows, chunksize=50))
-            # Add these new IDs to our set so we don't process them again if we read the file twice
-            for r in rows:
-                processed_ids.add(r['id'])
+            processed_ids.update(r["id"] for r in rows)
 
             extracted_results_column = []
             matched_results_column = []
@@ -300,71 +313,61 @@ def main():
             batch_ai_pushed = 0
             batch_ai_failed = 0
 
-            for ext_res, match_res, ai_res, status, duration, ai_used in results:
+            for ext_res, match_res, ai_res, status, _duration, ai_used in results:
                 extracted_results_column.append(ext_res)
                 matched_results_column.append(match_res)
                 ai_results_column.append(ai_res)
-                paper_processing_times.append(duration)
 
                 if status == "success":
                     batch_success += 1
-                    success_count += 1
                 elif status == "matching_failed":
                     batch_match_fail += 1
-                    matching_failed_count += 1
                 else:
                     batch_ext_fail += 1
-                    extraction_failed_count += 1
 
                 if ai_used:
                     batch_ai_pushed += 1
-                    ai_pushed_count += 1
                     if status != "success":
                         batch_ai_failed += 1
-                        ai_failed_count += 1
+
+            success_count += batch_success
+            matching_failed_count += batch_match_fail
+            extraction_failed_count += batch_ext_fail
+            ai_pushed_count += batch_ai_pushed
+            ai_failed_count += batch_ai_failed
 
             df_batch = df_batch.with_columns([
-                pl.Series("extracted_info", extracted_results_column),
-                pl.Series("matched_info", matched_results_column),
-                pl.Series("ai_output", ai_results_column)
+                pl.Series("extracted_info", extracted_results_column, dtype=_RESULT_DTYPE),
+                pl.Series("matched_info", matched_results_column, dtype=_RESULT_DTYPE),
+                pl.Series("ai_output", ai_results_column, dtype=_RESULT_DTYPE),
             ])
 
-            # --- 3. SAVE CHECKPOINT: Write just this batch to disk safely ---
-            # We add a timestamp to the filename to avoid accidental overwrites
-            batch_filename = os.path.join(OUTPUT_DIR, f"batch_{batch_counter}_{int(time.time())}.parquet")
+            # Checkpoint: timestamp in the name avoids overwriting batches from earlier runs
+            batch_filename = batch_dir / f"batch_{batch_counter}_{int(time.time())}.parquet"
             df_batch.write_parquet(batch_filename)
-            logger.info(f"Saved checkpoint: {batch_filename}")
-            # ----------------------------------------------------------------
+            logger.info("Saved checkpoint: %s", batch_filename)
 
-            logger.info(f"Finished Batch {batch_counter}. "
-                        f"Stats: {batch_success} Success | "
-                        f"{batch_match_fail} Match Fail | "
-                        f"{batch_ext_fail} Ext Fail | "
-                        f"AI Pushed: {batch_ai_pushed} | "
-                        f"AI Failed: {batch_ai_failed}")
-            batch_counter += 1
+            logger.info("Finished batch %d. Stats: %d Success | %d Match Fail | %d Ext Fail | "
+                        "AI Pushed: %d | AI Failed: %d",
+                        batch_counter, batch_success, batch_match_fail, batch_ext_fail,
+                        batch_ai_pushed, batch_ai_failed)
 
-    processing_end_time = time.time()
-    logger.info(f"Processing time: {(processing_end_time - processing_start_time) / 60:.2f} minutes")
+    logger.info("Processing time: %.2f minutes", (time.time() - processing_start_time) / 60)
 
-    # --- 4. OPTIONAL: Compile all the little batches into one final file at the end ---
+    # Merge all checkpoint batches into one file; sink_parquet streams without loading everything into RAM
     logger.info("Compiling all batch files into final output...")
     try:
-        # sink_parquet streams the data chunk-by-chunk directly to the hard drive without filling RAM
-        pl.scan_parquet(os.path.join(OUTPUT_DIR, "*.parquet")).sink_parquet(FINAL_OUTPUT_FILE)
-        logger.info(f"Success! Final compiled output saved to {FINAL_OUTPUT_FILE}")
-
+        pl.scan_parquet(batch_dir / "*.parquet").sink_parquet(output_file)
+        logger.info("Final compiled output saved to %s", output_file)
     except Exception as e:
-        logger.error(f"Failed to compile final file: {e}. Don't worry, your data is safe in the '{OUTPUT_DIR}' folder.")
-    # ----------------------------------------------------------------------------------
+        logger.error("Failed to compile final file: %s. The batches are still safe in '%s'.", e, batch_dir)
 
-    total_time = time.time() - total_start_time
-    logger.info("=== PIPELINE COMPLETION STATS ===")
-    logger.info(f"Total processed papers: {success_count + matching_failed_count + extraction_failed_count}")
-    logger.info(f"Total successful (Rule-based + AI): {success_count}")
-    logger.info(f"Total pushed to AI: {ai_pushed_count}")
-    logger.info(f"Total failed by AI: {ai_failed_count}")
-    logger.info(f"Total pipeline time: {total_time:.2f} seconds")
+    logger.info("=== PIPELINE COMPLETION STATS (this run) ===")
+    logger.info("Total processed papers: %d", success_count + matching_failed_count + extraction_failed_count)
+    logger.info("Total successful (rule-based + AI): %d", success_count)
+    logger.info("Total pushed to AI: %d", ai_pushed_count)
+    logger.info("Total failed by AI: %d", ai_failed_count)
+    logger.info("Total pipeline time: %.2f seconds", time.time() - total_start_time)
     logger.info("=================================")
 
 

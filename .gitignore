@@ -182,4 +182,9 @@ cython_debug/
 
 *.csv
 *.json
-*.np
+*.npz
+*.parquet
+
+# OS / pipeline outputs
+.DS_Store
+processed_batches/

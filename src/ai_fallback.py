@@ -1,14 +1,11 @@
-import logging
-import ollama
-import re
-import concurrent.futures
-from pydantic import BaseModel, ValidationError
-from typing import List
-import threading
-import queue
-
 import asyncio
+import logging
+import re
+from typing import List
+
 from ollama import AsyncClient
+from pydantic import BaseModel, ValidationError
+
 from definition.data.Author import Author as AIExtAuthor
 from definition.data.ExtAuthorData import ExtAuthorInfo, ExtResults
 
@@ -25,7 +22,7 @@ class ExtractionResponse(BaseModel):
     authors: List[AuthorModel]
 
 
-# The winning prompt from your experiments
+# Best-performing prompt from experiment_llm.py
 PROMPT_CONSTRAINED = """You are an academic data extraction AI.
 Extract authors and affiliations from a LaTeX preamble.
 Return JSON matching:
@@ -57,11 +54,11 @@ def get_latex_metadata_windows(text_content: str) -> str:
     if head_match:
         head_text = text_content[:head_match.start()]
         if len(head_text) > 10000:
-            head_text = head_text[-10000:]  # Keep the bottom 5000 chars of the head
+            head_text = head_text[-10000:]  # keep the last 10,000 chars of the head
     else:
         head_text = text_content[:10000]
 
-    # Grab the last 1000 characters of the entire file.
+    # Grab the last 2000 characters of the entire file.
     # This safely catches \address{} blocks right before \end{document}
     tail_text = text_content[-2000:]
 
@@ -75,9 +72,8 @@ def get_latex_metadata_windows(text_content: str) -> str:
     return combined_text
 
 
-
 def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qwen2.5:0.5b",
-                        timeout_seconds=15) -> ExtAuthorInfo:
+                        timeout_seconds=15) -> ExtAuthorInfo | None:
     _logger.info(f"AI Fallback extraction using Ollama for {arxiv_metadata.arxiv_id}")
 
     text_input = get_latex_metadata_windows(text_content)
@@ -110,7 +106,7 @@ def extract_with_ollama(text_content: str, arxiv_metadata, model_name: str = "qw
 
     except asyncio.TimeoutError:
         _logger.error(
-            f"🚨 BOOM! TIMEOUT: Model {model_name} took over {timeout_seconds}s for {arxiv_metadata.arxiv_id}. Skipping.")
+            f"Timeout: model {model_name} took over {timeout_seconds}s for {arxiv_metadata.arxiv_id}. Skipping.")
     except ValidationError as ve:
         _logger.error(f"JSON Validation Error for {arxiv_metadata.arxiv_id}: {ve}")
     except Exception as e:

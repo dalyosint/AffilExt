@@ -297,7 +297,11 @@ def visualize_institutions(G: nx.Graph, partition: dict, degree_dict: dict):
     plt.show()
 
 def main():
-    INPUT_FILE = "math_sample_processed_final.parquet"
+    import argparse
+    parser = argparse.ArgumentParser(description="Builds and plots the institution collaboration graph.")
+    parser.add_argument("input", nargs="?", default="math_sample_processed_final.parquet",
+                        help="Output Parquet file of pipeline_parquet.py. Default: %(default)s")
+    INPUT_FILE = parser.parse_args().input
 
     try:
         # 1. Build the ConnectedPapers-style data structure

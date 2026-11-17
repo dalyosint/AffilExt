@@ -14,7 +14,7 @@ try:
     print("[Approach 1] spaCy model loaded successfully.")
 except OSError:
     raise RuntimeError(
-        "spaCy model not found. Run: python -m spacy download en_core_web_sm"
+        "spaCy model not found. Run: python -m spacy download en_core_web_trf"
     )
 
 _TOP_MATCHES_LIMIT = 10
